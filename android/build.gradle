@@ -1,21 +1,19 @@
-
 buildscript {
     repositories {
         google()
-        jcenter()
+        mavenCentral() // Prefer mavenCentral over jcenter since jcenter is deprecated.
     }
 
     dependencies {
-        classpath 'com.android.tools.build:gradle:3.3.1'
+        classpath 'com.android.tools.build:gradle:8.0.2' // Updated Gradle plugin version
     }
 }
 
 apply plugin: 'com.android.library'
 
 android {
-    compileSdkVersion 30
-    // buildToolsVersion "28.0.3"
-    buildToolsVersion "30.0.3"
+    compileSdkVersion 33 // Updated compileSdkVersion
+    buildToolsVersion "33.0.0" // Update this if necessary
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -23,11 +21,12 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 23
-        targetSdkVersion 30
+        minSdkVersion 21 // Updated to a more compatible minSdkVersion
+        targetSdkVersion 33 // Updated targetSdkVersion
         versionCode 1
         versionName "1.0"
     }
+
     lintOptions {
         abortOnError false
     }
@@ -39,23 +38,10 @@ repositories {
 
 dependencies {
     implementation 'com.vdurmont:semver4j:3.1.0'
-    // implementation 'com.google.guava:guava:20.0'
-    implementation 'com.google.guava:guava:27.0.1-android'
+    implementation 'com.google.guava:guava:27.0.1-android' // Check for the latest version if needed
     implementation 'com.facebook.react:react-native:+'
     implementation project(':native-port')
-    // implementation fileTree(dir: 'libs', include: ['usbserial-6.0.5-release.aar'])
-    // if use below `compileOnly files` will cause
-    // java.lang.ClassNotFoundException: Didn't find class "com.felhr.usbserial.UsbSerialDevice"
-    // so have to use above `implementation fileTree` again
-    //
-    // implementation fileTree(dir: 'libs', include: ['usbserial-6.0.5-release.aar'])
-    // above works well in gradle-6.2, but in gradle-6.7.1 or higher, will cause
-    // `Direct local .aar file dependencies are not supported when building an AAR.
-    // The resulting AAR would be broken because the classes and Android resources
-    // from any local .aar file dependencies would not be packaged in the resulting
-    // AAR. Previous versions of the Android Gradle Plugin produce broken AARs in this
-    // case too (despite not throwing this error). The following direct local .aar
-    // file dependencies of the :react-native-usb-serialport project caused this error` ,
-    // so use below ref to https://stackoverflow.com/a/63665094
-    // compileOnly files('libs/usbserial-6.0.5-release.aar')
+
+    // You may want to replace this with the latest usbserial library if you have a newer version:
+    // implementation files('libs/usbserial-6.0.5-release.aar') 
 }
