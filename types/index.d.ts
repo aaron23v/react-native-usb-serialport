@@ -2,6 +2,8 @@ export interface IDevice {
   name: string;
   vendorId: number;
   productId: number;
+  class: number;
+  subclass: number;
 }
 
 export type Devices = Array<IDevice> | null;
@@ -231,6 +233,14 @@ interface RNSerialportStatic {
    * @memberof RNSerialportStatic
    */
   writeString(data: string): void;
+
+  /**
+   * Writes string to port
+   *
+   * @param {string} data
+   * @memberof RNSerialportStatic
+   */
+  writeBytes(data: bytes[]): void;
 
   /**
    * Writes Base64 string to port

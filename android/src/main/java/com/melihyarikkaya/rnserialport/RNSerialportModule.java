@@ -120,16 +120,16 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   public Map<String, Integer> deviceName2SocketId = new HashMap<>();
 
   //Connection Settings
-  private int DATA_BIT     = UsbSerialInterface.DATA_BITS_8;
+  private int DATA_BIT     = 9;
   private int STOP_BIT     = UsbSerialInterface.STOP_BITS_1;
-  private int PARITY       =  UsbSerialInterface.PARITY_NONE;
+  private int PARITY       = UsbSerialInterface.PARITY_EVEN;
   private int FLOW_CONTROL = UsbSerialInterface.FLOW_CONTROL_OFF;
-  private int BAUD_RATE = 9600;
+  private int BAUD_RATE = 115200;
 
 
   private boolean autoConnect = false;
   private String autoConnectDeviceName;
-  private int autoConnectBaudRate = 9600;
+  private int autoConnectBaudRate = 115200;
   private int portInterface = -1;
   private int returnedDataType = Definitions.RETURNED_DATA_TYPE_INTARRAY;
   private String driver = "AUTO";
@@ -372,6 +372,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       map.putString("name", d.getDeviceName());
       map.putInt("vendorId", d.getVendorId());
       map.putInt("productId", d.getProductId());
+      map.putInt("class", d.getDeviceClass());
+      map.putInt("subclass", d.getDeviceSubclass());
 
       deviceList.pushMap(map);
     }
@@ -403,7 +405,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       }
 
       if(!autoConnect) {
-        this.BAUD_RATE = baudRate;
+        this.BAUD_RATE = 115200;
       }
 
       UsbDevice device = chooseDevice(deviceName);
