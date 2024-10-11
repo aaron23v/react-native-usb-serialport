@@ -13,7 +13,7 @@ apply plugin: 'com.android.library'
 
 android {
     compileSdkVersion 33 // Updated compileSdkVersion
-    buildToolsVersion "33.0.0" // Update this if necessary
+    buildToolsVersion "34.0.0" // Update this if necessary
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -38,7 +38,7 @@ repositories {
 
 dependencies {
     implementation 'com.vdurmont:semver4j:3.1.0'
-    implementation 'com.google.guava:guava:27.0.1-android' // Check for the latest version if needed
+    implementation 'com.google.guava:guava:31.0.1-jre' // Check for the latest version if needed
     implementation 'com.facebook.react:react-native:+'
     implementation project(':native-port')
 
