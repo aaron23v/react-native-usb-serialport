@@ -12,8 +12,8 @@ buildscript {
 apply plugin: 'com.android.library'
 
 android {
-    compileSdkVersion 33 // Updated compileSdkVersion
-    buildToolsVersion "34.0.0" // Update this if necessary
+    compileSdkVersion 34 // Updated compileSdkVersion
+    buildToolsVersion "35.0.0" // Update this if necessary
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -21,8 +21,8 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 21 // Updated to a more compatible minSdkVersion
-        targetSdkVersion 33 // Updated targetSdkVersion
+        minSdkVersion 24 // Updated to a more compatible minSdkVersion
+        targetSdkVersion 34 // Updated targetSdkVersion
         versionCode 1
         versionName "1.0"
     }
