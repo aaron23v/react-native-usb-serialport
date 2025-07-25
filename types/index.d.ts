@@ -100,7 +100,7 @@ interface RNSerialportStatic {
    * @returns {Promise<boolean>}
    * @memberof RNSerialportStatic
    */
-  isOpen(): Promise<boolean>
+  isOpen(deviceName: string): Promise<boolean>
 
   /**
    * Returns status boolean via Promise
@@ -224,7 +224,7 @@ interface RNSerialportStatic {
    *
    * @memberof RNSerialportStatic
    */
-  disconnect(): void;
+  disconnectDevice(deviceName: string): void;
 
   /**
    * Writes string to port
@@ -235,12 +235,13 @@ interface RNSerialportStatic {
   writeString(data: string): void;
 
   /**
-   * Writes string to port
+   * Writes bytes to port
    *
-   * @param {string} data
+   * @param {string} deviceName
+   * @param {number[]} data
    * @memberof RNSerialportStatic
    */
-  writeBytes(data: bytes[]): void;
+  writeBytes(deviceName: string, data: number[]): void;
 
   /**
    * Writes Base64 string to port
