@@ -85,8 +85,7 @@ class TcpSocketClient extends TcpSocket {
 
     @SuppressWarnings("WeakerAccess")
     public void startListening() {
-        //noinspection unchecked
-        receiverTask.executeOnExecutor(getExecutorService(), new Pair<>(this, mReceiverListener));
+        receiverTask.executeOnExecutor(this, mReceiverListener);
     }
 
     /**

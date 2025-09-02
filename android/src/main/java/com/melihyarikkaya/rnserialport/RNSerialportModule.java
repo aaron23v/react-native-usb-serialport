@@ -138,6 +138,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
 
   private boolean usbServiceStarted = false;
+  private volatile boolean usbServiceReady = false;
 
   private final BroadcastReceiver mUsbReceiver = new BroadcastReceiver() {
     @Override
@@ -353,6 +354,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
     eventEmit(onServiceStarted, map);
 
+    // Mark service as ready after initialization is complete
+    usbServiceReady = true;
+    
     checkAutoConnect();
   }
 
@@ -367,6 +371,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
     mReactContext.unregisterReceiver(mUsbReceiver);
     usbServiceStarted = false;
+    usbServiceReady = false;
     eventEmit(onServiceStopped, null);
   }
 
@@ -427,7 +432,45 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         eventEmit(onErrorEvent, createError(Definitions.ERROR_USB_SERVICE_NOT_STARTED, Definitions.ERROR_USB_SERVICE_NOT_STARTED_MESSAGE));
         return;
       }
+      
+      // Wait for USB service to be fully ready before connection attempt
+      // This prevents race condition with React Native 0.80 threading model
+      if (!isUsbServiceReady()) {
+        // Brief wait and retry to ensure service is fully initialized
+        executorService.execute(new Runnable() {
+          @Override
+          public void run() {
+            int retryCount = 0;
+            int maxRetries = 10; // Max 1 second wait (100ms * 10)
+            while (!isUsbServiceReady() && retryCount < maxRetries) {
+              try {
+                Thread.sleep(100); // 100ms wait between retries
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+              }
+              retryCount++;
+            }
+            // Now attempt connection with fully initialized service
+            connectDeviceInternal(deviceName, baudRate);
+          }
+        });
+        return;
+      }
 
+      // Service is ready, proceed with direct connection
+      connectDeviceInternal(deviceName, baudRate);
+    } catch (Exception err) {
+      eventEmit(onErrorEvent, createError(deviceName, Definitions.ERROR_CONNECTION_FAILED, Definitions.ERROR_CONNECTION_FAILED_MESSAGE + " Catch Error Message:" + err.getMessage()));
+    }
+  }
+
+  /**
+   * Internal connection method with full validation logic
+   * Separated to support both direct and retry-based connection attempts
+   */
+  private void connectDeviceInternal(String deviceName, int baudRate) {
+    try {
       if(deviceName.isEmpty() || deviceName.length() < 0) {
         eventEmit(onErrorEvent, createError(Definitions.ERROR_CONNECT_DEVICE_NAME_INVALID, Definitions.ERROR_CONNECT_DEVICE_NAME_INVALID_MESSAGE));
         return;
@@ -509,6 +552,14 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
  @ReactMethod
  public void isServiceStarted(Promise promise) {
     promise.resolve(usbServiceStarted);
+ }
+ 
+ /**
+  * Check if USB service is fully ready for connections
+  * This prevents race conditions in React Native 0.80 threading model
+  */
+ private boolean isUsbServiceReady() {
+    return usbServiceStarted && usbServiceReady && usbManager != null;
  }
 
   @ReactMethod

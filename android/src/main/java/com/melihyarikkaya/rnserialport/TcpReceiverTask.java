@@ -1,53 +1,71 @@
 package com.melihyarikkaya.rnserialport;
 
-import android.os.AsyncTask;
-import android.util.Pair;
-
 import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Arrays;
 import java.net.Socket;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
- * This is a specialized AsyncTask that receives data from a socket in the background, and
- * notifies it's listener when data is received.  This is not threadsafe, the listener
+ * This is a specialized task that receives data from a socket in the background, and
+ * notifies it's listener when data is received. This is not threadsafe, the listener
  * should handle synchronicity.
+ * 
+ * Updated to use modern ExecutorService instead of deprecated AsyncTask for React Native 0.80 compatibility
  */
-class TcpReceiverTask extends AsyncTask<Pair<TcpSocketClient, TcpReceiverTask.OnDataReceivedListener>, Void, Void> {
+class TcpReceiverTask {
+    private static final ExecutorService executorService = Executors.newCachedThreadPool();
+    private Future<?> currentTask;
+    private volatile boolean cancelled = false;
     /**
-     * An infinite loop to block and read data from the socket.
+     * Execute the task with modern ExecutorService instead of deprecated AsyncTask
      */
-    @SafeVarargs
-    @Override
-    protected final Void doInBackground(Pair<TcpSocketClient, TcpReceiverTask.OnDataReceivedListener>... params) {
-        if (params.length > 1) {
-            throw new IllegalArgumentException("This task is only for a single socket/listener pair.");
-        }
-
-        TcpSocketClient clientSocket = params[0].first;
-        OnDataReceivedListener receiverListener = params[0].second;
-        int socketId = clientSocket.getId();
-        Socket socket = clientSocket.getSocket();
-        byte[] buffer = new byte[8192];
-        int bufferCount;
-        try {
-            BufferedInputStream in = new BufferedInputStream(socket.getInputStream());
-            while (!isCancelled() && !socket.isClosed()) {
-                bufferCount = in.read(buffer);
-                if (bufferCount > 0) {
-                    receiverListener.onData(socketId, Arrays.copyOfRange(buffer, 0, bufferCount));
-                } else if (bufferCount == -1) {
-                    clientSocket.destroy();
+    public void executeOnExecutor(TcpSocketClient clientSocket, OnDataReceivedListener receiverListener) {
+        cancelled = false;
+        currentTask = executorService.submit(() -> {
+            int socketId = clientSocket.getId();
+            Socket socket = clientSocket.getSocket();
+            byte[] buffer = new byte[8192];
+            int bufferCount;
+            try {
+                BufferedInputStream in = new BufferedInputStream(socket.getInputStream());
+                while (!cancelled && !socket.isClosed()) {
+                    bufferCount = in.read(buffer);
+                    if (bufferCount > 0) {
+                        receiverListener.onData(socketId, Arrays.copyOfRange(buffer, 0, bufferCount));
+                    } else if (bufferCount == -1) {
+                        clientSocket.destroy();
+                        break;
+                    }
                 }
+            } catch (IOException ioe) {
+                if (receiverListener != null && !socket.isClosed()) {
+                    receiverListener.onError(socketId, ioe.getMessage());
+                }
+                cancel(false);
             }
-        } catch (IOException ioe) {
-            if (receiverListener != null && !socket.isClosed()) {
-                receiverListener.onError(socketId, ioe.getMessage());
-            }
-            this.cancel(false);
+        });
+    }
+
+    /**
+     * Cancel the current task execution
+     */
+    public boolean cancel(boolean mayInterruptIfRunning) {
+        cancelled = true;
+        if (currentTask != null) {
+            return currentTask.cancel(mayInterruptIfRunning);
         }
-        return null;
+        return true;
+    }
+
+    /**
+     * Check if task is cancelled
+     */
+    public boolean isCancelled() {
+        return cancelled;
     }
 
     /**

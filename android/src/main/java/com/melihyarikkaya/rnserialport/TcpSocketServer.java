@@ -1,7 +1,6 @@
 package com.melihyarikkaya.rnserialport;
 
 import android.annotation.SuppressLint;
-import android.os.AsyncTask;
 
 import com.facebook.react.bridge.ReadableMap;
 
@@ -13,6 +12,7 @@ import java.net.Socket;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public final class TcpSocketServer extends TcpSocket {
     private ServerSocket serverSocket;
@@ -20,28 +20,8 @@ public final class TcpSocketServer extends TcpSocket {
     private int clientSocketIds;
     private final ExecutorService executorService;
     private final ConcurrentHashMap<Integer, TcpSocket> socketClients;
-
-    @SuppressLint("StaticFieldLeak")
-    private final AsyncTask listening = new AsyncTask() {
-        @Override
-        protected Void doInBackground(Object[] objects) {
-            try {
-                while (!isCancelled() && !serverSocket.isClosed()) {
-                    Socket socket = serverSocket.accept();
-                    int clientId = getClientId();
-                    TcpSocketClient socketClient = new TcpSocketClient(mReceiverListener, clientId, socket);
-                    socketClients.put(clientId, socketClient);
-                    mReceiverListener.onConnection(getId(), clientId, socket);
-                    socketClient.startListening();
-                }
-            } catch (IOException e) {
-                if (!serverSocket.isClosed()) {
-                    mReceiverListener.onError(getId(), e.getMessage());
-                }
-            }
-            return null;
-        }
-    };
+    private Future<?> listeningTask;
+    private volatile boolean cancelled = false;
 
 
     public TcpSocketServer(final ConcurrentHashMap<Integer, TcpSocket> socketClients, final TcpReceiverTask.OnDataReceivedListener receiverListener, final Integer id,
@@ -84,17 +64,33 @@ public final class TcpSocketServer extends TcpSocket {
     }
 
     private void listen() {
-        //noinspection unchecked
-        listening.executeOnExecutor(executorService);
+        cancelled = false;
+        listeningTask = executorService.submit(() -> {
+            try {
+                while (!cancelled && !serverSocket.isClosed()) {
+                    Socket socket = serverSocket.accept();
+                    int clientId = getClientId();
+                    TcpSocketClient socketClient = new TcpSocketClient(mReceiverListener, clientId, socket);
+                    socketClients.put(clientId, socketClient);
+                    mReceiverListener.onConnection(getId(), clientId, socket);
+                    socketClient.startListening();
+                }
+            } catch (IOException e) {
+                if (!serverSocket.isClosed()) {
+                    mReceiverListener.onError(getId(), e.getMessage());
+                }
+            }
+        });
     }
 
     public void close() {
         try {
-            if (!listening.isCancelled()) {
-                // stop the receiving task
-                listening.cancel(true);
-                executorService.shutdown();
+            // Cancel the listening task
+            cancelled = true;
+            if (listeningTask != null && !listeningTask.isCancelled()) {
+                listeningTask.cancel(true);
             }
+            executorService.shutdown();
 
             // close the socket
             if (serverSocket != null && !serverSocket.isClosed()) {
