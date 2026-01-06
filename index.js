@@ -68,4 +68,5 @@ RNSerialport.hexToUtf16 = (hex) => {
   return str;
 }
 
+
 module.exports = { RNSerialport, definitions, actions };

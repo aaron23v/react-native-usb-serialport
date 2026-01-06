@@ -21,6 +21,7 @@ export interface IOnServiceStarted {
   deviceAttached: boolean
 }
 
+
 interface DefinitionsStatic {
   DATA_BITS: {
     DATA_BITS_5: number
@@ -193,6 +194,25 @@ interface RNSerialportStatic {
    */
   setDriver(driver: Drivers): void;
 
+  /**
+   * Set whether hardware PG enable is allowed (safety mechanism)
+   *
+   * @param {boolean} allow Whether to allow hardware PG enable
+   * @memberof RNSerialportStatic
+   */
+  setAllowHardwareEnable(allow: boolean): void;
+
+  /**
+   * Set the control mode (screen type) for auto-log collection behavior
+   * TREATMENT mode: auto-starts log collection after sequence completion
+   * MAPPING/MANUAL mode: no auto-log collection
+   *
+   * @param {string} deviceName The name of the device
+   * @param {string} mode The control mode ("TREATMENT", "MAPPING", or "MANUAL")
+   * @memberof RNSerialportStatic
+   */
+  setControlMode(deviceName: string, mode: string): void;
+
   //End setter methods
 
   /**
@@ -276,5 +296,199 @@ interface RNSerialportStatic {
    * @memberof RNSerialportStatic
    */
   hexToUtf16(hex: string): string
+
+  // ============== Native Queue Methods ==============
+
+  /**
+   * Add a command to the back of the queue (normal priority)
+   *
+   * @param {string} deviceName The name of the device to send the command to
+   * @param {number[]} command The command to be added to the queue
+   * @param {string} functionCaller Identifier for the calling function
+   * @memberof RNSerialportStatic
+   */
+  addToQueue(deviceName: string, command: number[], functionCaller: string): void;
+
+  /**
+   * Add a command to the front of the queue (high priority)
+   *
+   * @param {string} deviceName The name of the device to send the command to
+   * @param {number[]} command The command to be added to the front of the queue
+   * @param {string} functionCaller Identifier for the calling function
+   * @memberof RNSerialportStatic
+   */
+  addToQueueFront(deviceName: string, command: number[], functionCaller: string): void;
+
+  /**
+   * Add a command to the front of the queue, replacing any existing commands with the same signature
+   *
+   * @param {string} deviceName The name of the device to send the command to
+   * @param {number[]} command The command to be added to the front of the queue
+   * @param {string} functionCaller Identifier for the calling function
+   * @memberof RNSerialportStatic
+   */
+  addToQueueFrontReplace(deviceName: string, command: number[], functionCaller: string): void;
+
+  /**
+   * Write a command to the device immediately by adding it to the front of the queue
+   *
+   * @param {string} deviceName The name of the device to send the command to
+   * @param {number[]} command The command to be written
+   * @param {string} functionCaller Identifier for the calling function
+   * @memberof RNSerialportStatic
+   */
+  writeOnClick(deviceName: string, command: number[], functionCaller: string): void;
+
+  /**
+   * Write a command to the device immediately by replacing any existing commands with the same signature
+   *
+   * @param {string} deviceName The name of the device to send the command to
+   * @param {number[]} command The command to be written
+   * @param {string} functionCaller Identifier for the calling function
+   * @memberof RNSerialportStatic
+   */
+  writeOnClickReplace(deviceName: string, command: number[], functionCaller: string): void;
+
+  /**
+   * Write a read command to the device by adding it to the queue (limited to 2 read commands)
+   *
+   * @param {string} deviceName The name of the device to send the command to
+   * @param {number[]} command The read command to be written
+   * @param {string} functionCaller Identifier for the calling function
+   * @memberof RNSerialportStatic
+   */
+  writeReadCommand(deviceName: string, command: number[], functionCaller: string): void;
+
+  /**
+   * Clear all commands from the queue
+   *
+   * @memberof RNSerialportStatic
+   */
+  clearQueue(): void;
+
+  /**
+   * Pause the queue processing
+   *
+   * @memberof RNSerialportStatic
+   */
+  pauseQueue(): void;
+
+  /**
+   * Resume the queue processing
+   *
+   * @memberof RNSerialportStatic
+   */
+  resumeQueue(): void;
+
+  /**
+   * Clear the timeout for a given command
+   *
+   * @param {number[]} command The command array to clear timeout for
+   * @memberof RNSerialportStatic
+   */
+  clearCommandTimeout(command: number[]): void;
+
+  // ============== Heartbeat Methods ==============
+
+  /**
+   * Start native heartbeat for the specified device
+   * Adds heartbeat commands to queue every 250ms, executed with 25ms intervals like all commands
+   *
+   * @param {string} deviceName The name of the device to start heartbeat for
+   * @memberof RNSerialportStatic
+   */
+  startHeartbeat(deviceName: string): void;
+
+  /**
+   * Stop native heartbeat
+   *
+   * @memberof RNSerialportStatic
+   */
+  stopHeartbeat(): void;
+
+  // ============== Native Data Processing Methods ==============
+
+  /**
+   * Process native read data with enhanced parsing and structured events
+   *
+   * @param {string} deviceName The name of the device
+   * @param {number[]} rawData The raw data array from device
+   * @memberof RNSerialportStatic
+   */
+  processNativeReadData(deviceName: string, rawData: number[]): void;
+
+  // All read command methods removed - redundant with heartbeat command
+  // processNativeHardwarePulses removed - caused duplicate pulse emissions
+
+
+  // ============== Additional Native Methods ==============
+
+  /**
+   * Disconnect all connected devices
+   *
+   * @memberof RNSerialportStatic
+   */
+  disconnectAllDevices(): void;
+
+  /**
+   * Set native gateway mode for device communication
+   *
+   * @param {boolean} isNativeGw Whether to enable native gateway mode
+   * @memberof RNSerialportStatic
+   */
+  setIsNativeGateway(isNativeGw: boolean): void;
+
+  /**
+   * Enable/disable JS event emission for serial port data in native gateway mode
+   *
+   * @param {boolean} isJsEvent Whether to emit JS events
+   * @memberof RNSerialportStatic
+   */
+  setIsNativeGatewayJsEventEmitOnSerialportData(isJsEvent: boolean): void;
+
+  /**
+   * Map application bus to device name
+   *
+   * @param {number} appBus Application bus identifier
+   * @param {string} deviceName Device name to map
+   * @memberof RNSerialportStatic
+   */
+  appBus2DeviceNamePut(appBus: number, deviceName: string): void;
+
+  /**
+   * Start manual log collection for specified device
+   * Uses native device state to determine log collection parameters
+   *
+   * @param {string} deviceName The name of the device to start log collection for
+   * @memberof RNSerialportStatic
+   */
+  startManualLogCollection(deviceName: string): void;
+
+  /**
+   * Stop native logging for specified device
+   *
+   * @param {string} deviceName The name of the device to stop logging for
+   * @memberof RNSerialportStatic
+   */
+  stopNativeLogging(deviceName: string): void;
+
+  /**
+   * Acknowledge receipt and processing of a pulse batch from native layer
+   * Part of ACK protocol for reliable log collection completion
+   *
+   * @param {string} deviceName The name of the device
+   * @param {number} batchSequence The sequence number of the batch being acknowledged
+   * @memberof RNSerialportStatic
+   */
+  acknowledgePulseBatch(deviceName: string, batchSequence: number): void;
+
+  /**
+   * Reset device log buffer (clear treatment log table)
+   *
+   * @param {string} deviceName The name of the device
+   * @memberof RNSerialportStatic
+   */
+  resetDeviceLog(deviceName: string): void;
+
 }
 export var RNSerialport: RNSerialportStatic;
