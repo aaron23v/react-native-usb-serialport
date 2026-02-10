@@ -208,6 +208,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     super(reactContext);
     mReactContext = reactContext;
     fillDriverList();
+    startQueueProcessor();
   }
 
   @Override
@@ -250,7 +251,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   public Map<String, Integer> deviceName2SocketId = new HashMap<>();
 
   //Connection Settings
-  private int DATA_BIT     = UsbSerialInterface.DATA_BITS_8;
+  private int DATA_BIT     = 9;
   private int STOP_BIT     = UsbSerialInterface.STOP_BITS_1;
   private int PARITY       = UsbSerialInterface.PARITY_EVEN;
   private int FLOW_CONTROL = UsbSerialInterface.FLOW_CONTROL_OFF;
@@ -290,9 +291,28 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       switch (arg1.getAction()) {
         case ACTION_USB_CONNECT:
           eventEmit(onConnectedEvent, extras.getString(EXTRA_USB_DEVICE_NAME));
+          startHeartbeat(extras.getString(EXTRA_USB_DEVICE_NAME));
           break;
         case ACTION_USB_DISCONNECTED:
-          eventEmit(onDisconnectedEvent, extras.getString(EXTRA_USB_DEVICE_NAME));
+          String disconnectedDevice = extras.getString(EXTRA_USB_DEVICE_NAME);
+
+          if (disconnectedDevice != null &&
+              deviceLoggingActive.getOrDefault(disconnectedDevice, false)) {
+              android.util.Log.w(TAG, "USB_DISCONNECT: Device was collecting logs, cleaning up");
+              cleanupLogCollectionState(disconnectedDevice, true);
+              emitLogError(disconnectedDevice, "Device disconnected during log collection");
+          }
+
+          if (disconnectedDevice != null) {
+              temperatureCache.remove(disconnectedDevice);
+          }
+
+          eventEmit(onDisconnectedEvent, disconnectedDevice);
+
+          synchronized(mPermissionLock) {
+              mHasPermission = false;
+              mPermissionRequested = false;
+          }
           break;
         case ACTION_USB_NOT_SUPPORTED:
           eventEmit(onErrorEvent, createError(Definitions.ERROR_DEVICE_NOT_SUPPORTED, Definitions.ERROR_DEVICE_NOT_SUPPORTED_MESSAGE));
@@ -342,6 +362,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           stopConnection(deviceName);
           serialPorts.remove(deviceName);
           appBus2DeviceName.values().removeIf(deviceName::equals);
+          synchronized(mPermissionLock) {
+              mHasPermission = false;
+              mPermissionRequested = false;
+          }
         }
           break;
         case ACTION_USB_PERMISSION: {
@@ -992,42 +1016,22 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           @Override
           public void onReceivedData(byte[] bytes) {
             if (bytes.length == 0) {
-              // invalidate will cause here
               return;
             }
 
-            if (isNativeGateway) {
-              Gateway.onSerialportData(device.getDeviceName(), bytes, RNSerialportModule.this);
-              if (!isNativeGatewayJsEventEmitOnSerialportData) {
-                return;
-              }
+            final byte[] bytesCopy = Arrays.copyOf(bytes, bytes.length);
+            final String deviceName = device.getDeviceName();
+
+            if (usbProcessingExecutor == null || usbProcessingExecutor.isShutdown() || usbProcessingExecutor.isTerminated()) {
+              return;
             }
 
-            try {
-
-              String payloadKey = "payload";
-
-              WritableMap params = Arguments.createMap();
-
-              if(returnedDataType == Definitions.RETURNED_DATA_TYPE_INTARRAY) {
-                WritableArray intArray = new WritableNativeArray();
-                for(byte b: bytes) {
-                  intArray.pushInt(unsignedByteToInt(b));
-                }
-                params.putArray(payloadKey, intArray);
-              } else if(returnedDataType == Definitions.RETURNED_DATA_TYPE_HEXSTRING) {
-                String hexString = Definitions.bytesToHex(bytes);
-                params.putString(payloadKey, hexString);
-              } else {
-                return;
+            usbProcessingExecutor.execute(new Runnable() {
+              @Override
+              public void run() {
+                processNativePackets(deviceName, bytesCopy);
               }
-
-              params.putString("deviceName", device.getDeviceName());
-
-              eventEmit(onReadDataFromPort, params);
-            } catch (Exception err) {
-              eventEmit(onErrorEvent, createError(Definitions.ERROR_NOT_READED_DATA, Definitions.ERROR_NOT_READED_DATA_MESSAGE + " System Message: " + err.getMessage()));
-            }
+            });
           }
         };
         serialPort.read(usbReadCallback);
