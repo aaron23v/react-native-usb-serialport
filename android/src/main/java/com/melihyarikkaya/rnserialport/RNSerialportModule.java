@@ -430,7 +430,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     filter.addAction(ACTION_USB_DETACHED);
     
      if (android.os.Build.VERSION.SDK_INT >= 34) {
-        mReactContext.registerReceiver(mUsbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        mReactContext.registerReceiver(mUsbReceiver, filter, Context.RECEIVER_EXPORTED);
     } else {
         mReactContext.registerReceiver(mUsbReceiver, filter);
     }
@@ -1054,7 +1054,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       return;
     Intent permissionIntent = new Intent(ACTION_USB_PERMISSION);
     permissionIntent.putExtra(UsbManager.EXTRA_DEVICE, device);
-    PendingIntent mPendingIntent = PendingIntent.getBroadcast(mReactContext, 0 , permissionIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    permissionIntent.setPackage(mReactContext.getPackageName());
+    PendingIntent mPendingIntent = PendingIntent.getBroadcast(mReactContext, 0 , permissionIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
     usbManager.requestPermission(device, mPendingIntent);
   }
 
