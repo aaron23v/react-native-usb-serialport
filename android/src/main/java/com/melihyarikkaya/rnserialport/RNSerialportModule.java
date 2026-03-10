@@ -9,6 +9,7 @@ import android.content.IntentFilter;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.Promise;
@@ -181,6 +182,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     private final ConcurrentHashMap<String, Double> temperatureCache = new ConcurrentHashMap<>();
     private static final double TEMPERATURE_SMOOTHING_FACTOR = 0.3; // 30% new value, 70% previous (aggressive smoothing)
 
+    // Packet integrity validator for detecting garbled USB data
+    private final PacketIntegrityValidator packetIntegrityValidator = new PacketIntegrityValidator(TAG);
+    private final TimestampValidator timestampValidator = new TimestampValidator();
+
     // Special Command Signatures
     private static final byte[] READ_COMMAND_SIG = {102, 0, 0, 0, 51};
     private static final byte[] RESET_COMMAND_SIG = {(byte)170, 0, 8, 55, 15, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192};
@@ -247,6 +252,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
   private UsbManager usbManager;
   public Map<String, UsbSerialDevice> serialPorts = new HashMap<>(); // alias deviceName2SerialPort
+    // Initialize auto-ramp engine with reference to serial ports
+    private final AutoRampEngine autoRampEngine = new AutoRampEngine(serialPorts);
   public Map<Integer, String> appBus2DeviceName = new HashMap<>(); // App define which bus id match which deviceName
   public Map<String, Integer> deviceName2SocketId = new HashMap<>();
 
@@ -2152,7 +2159,26 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
       android.util.Log.d(TAG, "Processing device status packet (" + packet.length + " bytes)");
 
-      // Parse device status using existing native data structure with temperature smoothing
+      // Validate integrity BEFORE constructing DeviceStatusData.
+      // DeviceStatusData updates the EMA temperature cache in its constructor, so building it
+      // from a corrupt packet poisons the cache and causes decaying bad values across many
+      // subsequent valid heartbeats. Bail here instead so the EMA is never touched.
+      PacketIntegrityValidator.Result integrityResult = packetIntegrityValidator.validate(packet);
+      if (integrityResult.failed) {
+        WritableMap statusParams = Arguments.createMap();
+        statusParams.putString("deviceName", deviceName);
+        statusParams.putString("eventType", "DEVICE_STATUS");
+        WritableMap dataMap = Arguments.createMap();
+        dataMap.putBoolean("integrityFailed", true);
+        dataMap.putInt("integrityScore", integrityResult.score);
+        dataMap.putString("integrityViolations", integrityResult.violations);
+        statusParams.putMap("data", dataMap);
+        eventEmit("onNativeDeviceStatus", statusParams);
+        return;
+      }
+
+      // Parse device status using existing native data structure with temperature smoothing.
+      // Only reached for packets that passed integrity validation.
       DeviceStatusData deviceStatus = new DeviceStatusData(packet, deviceName, temperatureCache);
 
       // 🛡️ SAFETY CHECK: Reject hardware enable if not on control screen
@@ -2175,8 +2201,23 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       statusParams.putString("eventType", "DEVICE_STATUS");
       WritableMap dataMap = deviceStatus.toWritableMap();
 
+      // Validate timestamp against sliding window before emitting to JS.
+      // Rejected timestamps are omitted — JS skips currentDuration update.
+      long validatedTimestamp = timestampValidator.validate(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus);
+      if (validatedTimestamp >= 0) {
+        dataMap.putDouble("timestamp", validatedTimestamp);
+      }
+
+      // Add integrity check results to the existing data map
+      dataMap.putInt("integrityScore", integrityResult.score);
+      dataMap.putBoolean("integrityFailed", integrityResult.failed);
+      dataMap.putString("integrityViolations", integrityResult.violations);
+
       statusParams.putMap("data", dataMap);
       eventEmit("onNativeDeviceStatus", statusParams);
+
+      // Auto-ramp: check timeline keyframes against hardware timestamp
+      autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso);
 
       // Emit power status event
       WritableMap powerParams = Arguments.createMap();
@@ -2736,6 +2777,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     public final int trainsInSequence;
     public final int lastPulseIndex;
     public final int pgType;
+    public final String pgSerialNumber;
     public final long timestamp;
     public final int rotationX;
     public final int rotationY;
@@ -2841,6 +2883,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       this.trainsInSequence = convertTwoBytes(buffer[20], buffer[21]);
       this.lastPulseIndex = convertTwoBytes(buffer[22], buffer[23]);
       this.pgType = buffer[24] & 0xFF;
+      this.pgSerialNumber = String.format("%d%d%d",
+        buffer[25] & 0xFF, buffer[26] & 0xFF, buffer[27] & 0xFF);
       this.timestamp = convertFourBytes(buffer[42], buffer[43], buffer[44], buffer[45]);
       this.rotationX = convertTwoBytes(buffer[46], buffer[47]);
       this.rotationY = convertTwoBytes(buffer[48], buffer[49]);
@@ -2929,7 +2973,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       map.putInt("trainsInSequence", trainsInSequence);
       map.putInt("lastPulseIndex", lastPulseIndex);
       map.putInt("pgType", pgType);
-      map.putDouble("timestamp", timestamp);
+      map.putString("pgSerialNumber", pgSerialNumber);
       map.putInt("rotationX", rotationX);
       map.putInt("rotationY", rotationY);
       map.putInt("rotationZ", rotationZ);
@@ -3000,6 +3044,77 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   }
 
   /**
+   * Sliding window validator for device status timestamps.
+   * Maintains per-device history of recent valid timestamps and rejects outliers
+   * (garbled bytes, reconnection artifacts) by comparing against the window.
+   *
+   * On reject: caller omits timestamp from JS event, so currentDuration is not corrupted.
+   * On treatmentStatus change: window is cleared to allow legitimate timer resets.
+   */
+  public static class TimestampValidator {
+    private static final int WINDOW_SIZE = 10;
+    private static final long MAX_DELTA_MS = 10_000L;
+
+    private final ConcurrentHashMap<String, long[]> windows = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> windowCounts = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> lastTreatmentStatus = new ConcurrentHashMap<>();
+
+    public long validate(String deviceName, long rawTimestamp, int treatmentStatus) {
+      Integer prevStatus = lastTreatmentStatus.get(deviceName);
+
+      if (prevStatus != null && prevStatus != treatmentStatus) {
+        clearWindow(deviceName);
+        Log.i(TAG, "TIMESTAMP_VALIDATOR: Window cleared for " + deviceName +
+              " (treatmentStatus " + prevStatus + " -> " + treatmentStatus + ")");
+      }
+      lastTreatmentStatus.put(deviceName, treatmentStatus);
+
+      long[] window = windows.computeIfAbsent(deviceName, k -> new long[WINDOW_SIZE]);
+      int count = windowCounts.getOrDefault(deviceName, 0);
+
+      if (count == 0) {
+        if (rawTimestamp < 0) {
+          Log.w(TAG, "TIMESTAMP_VALIDATOR: Negative timestamp rejected: " + rawTimestamp);
+          return -1;
+        }
+        window[0] = rawTimestamp;
+        windowCounts.put(deviceName, 1);
+        return rawTimestamp;
+      }
+
+      long lastValid = window[(count - 1) % WINDOW_SIZE];
+
+      if (rawTimestamp < lastValid) {
+        Log.w(TAG, "TIMESTAMP_VALIDATOR: Backward jump rejected for " + deviceName +
+              " (last=" + lastValid + ", new=" + rawTimestamp + ")");
+        return -1;
+      }
+
+      long delta = rawTimestamp - lastValid;
+      if (delta > MAX_DELTA_MS) {
+        Log.w(TAG, "TIMESTAMP_VALIDATOR: Large delta rejected for " + deviceName +
+              " (last=" + lastValid + ", new=" + rawTimestamp + ", delta=" + delta + "ms)");
+        return -1;
+      }
+
+      int newCount = count + 1;
+      window[(newCount - 1) % WINDOW_SIZE] = rawTimestamp;
+      windowCounts.put(deviceName, newCount);
+      return rawTimestamp;
+    }
+
+    public void clearWindow(String deviceName) {
+      windows.remove(deviceName);
+      windowCounts.remove(deviceName);
+    }
+
+    public void clearDevice(String deviceName) {
+      clearWindow(deviceName);
+      lastTreatmentStatus.remove(deviceName);
+    }
+  }
+
+  /**
    * Native utility methods for data conversion and validation
    */
   private static int convertTwoBytes(byte high, byte low) {
@@ -3032,6 +3147,12 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
                                           double rawTemp) {
     // Get previous smoothed value from cache
     Double previousTemp = cache.get(deviceName);
+
+    // Reject physically impossible readings — corrupted bytes produce values like 779°C
+    // which would poison the EMA cache. Return cached value if available, else 0.
+    if (rawTemp < -20.0 || rawTemp > 100.0) {
+      return previousTemp != null ? previousTemp : 0.0;
+    }
 
     // First reading for this device - no smoothing needed
     if (previousTemp == null) {
@@ -3088,14 +3209,45 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // Parse device status using native data structure with temperature smoothing
       DeviceStatusData deviceStatus = new DeviceStatusData(data, deviceName, temperatureCache);
 
+      // Run packet integrity validation
+      PacketIntegrityValidator.Result integrityResult = packetIntegrityValidator.validate(data);
+
+      // If integrity failed: emit event for JS logging, then bail out
+      if (integrityResult.failed) {
+        WritableMap statusParams = Arguments.createMap();
+        statusParams.putString("deviceName", deviceName);
+        statusParams.putString("eventType", "DEVICE_STATUS");
+        WritableMap dataMap = deviceStatus.toWritableMap();
+        dataMap.putInt("integrityScore", integrityResult.score);
+        dataMap.putBoolean("integrityFailed", integrityResult.failed);
+        dataMap.putString("integrityViolations", integrityResult.violations);
+        statusParams.putMap("data", dataMap);
+        eventEmit("onNativeDeviceStatus", statusParams);
+        return;
+      }
+
       // Emit structured device status event
       WritableMap statusParams = Arguments.createMap();
       statusParams.putString("deviceName", deviceName);
       statusParams.putString("eventType", "DEVICE_STATUS");
       WritableMap dataMap = deviceStatus.toWritableMap();
 
+      // Validate timestamp against sliding window before emitting to JS
+      long validatedTimestamp = timestampValidator.validate(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus);
+      if (validatedTimestamp >= 0) {
+        dataMap.putDouble("timestamp", validatedTimestamp);
+      }
+
+      // Add integrity check results to the existing data map
+      dataMap.putInt("integrityScore", integrityResult.score);
+      dataMap.putBoolean("integrityFailed", integrityResult.failed);
+      dataMap.putString("integrityViolations", integrityResult.violations);
+
       statusParams.putMap("data", dataMap);
       eventEmit("onNativeDeviceStatus", statusParams);
+
+      // Auto-ramp: check timeline keyframes against hardware timestamp
+      autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso);
 
       // Extract and emit power status if changed
       WritableMap powerParams = Arguments.createMap();
@@ -4032,6 +4184,27 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       cleanupLogCollectionState(deviceName, true, true);
     }
   }
+
+    @ReactMethod
+    public void loadAutoRampTimeline(String deviceName, ReadableArray timelineData, Promise promise) {
+        try {
+            autoRampEngine.loadTimeline(deviceName, timelineData);
+            promise.resolve(true);
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to load auto-ramp timeline: " + e.getMessage(), e);
+            promise.reject("AUTO_RAMP_ERROR", "Failed to load timeline: " + e.getMessage(), e);
+        }
+    }
+
+    @ReactMethod
+    public void advanceAutoRampSequence(String deviceName) {
+        autoRampEngine.advanceSequence(deviceName);
+    }
+
+    @ReactMethod
+    public void clearAutoRamp(String deviceName) {
+        autoRampEngine.clear(deviceName);
+    }
 
   /**
    * Emit log collection error
