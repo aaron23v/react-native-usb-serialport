@@ -1499,6 +1499,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * Add command to native queue with priority
    */
   private void addToNativeQueue(String deviceName, byte[] command, int priority, String functionCaller, int retryCount) {
+    if (deviceName == null || deviceName.isEmpty()) {
+      android.util.Log.w(TAG, "No device connected, dropping command: " + functionCaller);
+      return;
+    }
+
     if (isPaused) {
       android.util.Log.w(TAG, "Queue is paused, command not added: " + functionCaller);
       return;
@@ -3915,6 +3920,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   @ReactMethod
   public void acknowledgePulseBatch(int batchSequence) {
+    if (heartbeatDevice == null) return;
     try {
       // FIX #9: Initialize to -1 to accept batch 0 (first batch)
       // Previous: getOrDefault(deviceName, 0) rejected batch 0 since 0 != 0+1
@@ -4087,6 +4093,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   @ReactMethod
   public void resetDeviceLog() {
+    if (heartbeatDevice == null) return;
     try {
       android.util.Log.i(TAG, "Manual device log reset requested for: " + heartbeatDevice);
       nativeResetDeviceLog(heartbeatDevice);
@@ -4101,6 +4108,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   @ReactMethod
   public void startManualLogCollection() {
+    if (heartbeatDevice == null) return;
     try {
       // Native-first: Get current lastPulseIndex from device processing state
       int lastPulseIndex = lastProcessedPulseIndex > 0 ? lastProcessedPulseIndex : 0;
@@ -4141,6 +4149,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   @ReactMethod
   public void suppressNextLogCollection() {
+    if (heartbeatDevice == null) return;
     android.util.Log.i(TAG, "🚫 suppressNextLogCollection set for: " + heartbeatDevice);
     deviceSuppressNextLogCollection.put(heartbeatDevice, true);
   }
@@ -4150,6 +4159,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   @ReactMethod
   public void stopNativeLogging() {
+    if (heartbeatDevice == null) return;
     try {
       android.util.Log.i(TAG, "🛑 CANCEL: Stopping log collection for: " + heartbeatDevice);
 
@@ -4184,6 +4194,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
     @ReactMethod
     public void loadAutoRampTimeline(ReadableArray timelineData, Promise promise) {
+        if (heartbeatDevice == null) { promise.resolve(false); return; }
         try {
             autoRampEngine.loadTimeline(heartbeatDevice, timelineData);
             promise.resolve(true);
@@ -4195,11 +4206,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
     @ReactMethod
     public void advanceAutoRampSequence() {
+        if (heartbeatDevice == null) return;
         autoRampEngine.advanceSequence(heartbeatDevice);
     }
 
     @ReactMethod
     public void clearAutoRamp() {
+        if (heartbeatDevice == null) return;
         autoRampEngine.clear(heartbeatDevice);
     }
 
