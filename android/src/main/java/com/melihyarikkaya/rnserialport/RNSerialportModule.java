@@ -368,7 +368,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           eventEmit(onDeviceDetachedEvent, deviceName);
           stopConnection(deviceName);
           serialPorts.remove(deviceName);
-          appBus2DeviceName.values().removeIf(deviceName::equals);
+          if (deviceName != null) appBus2DeviceName.values().removeIf(deviceName::equals);
           synchronized(mPermissionLock) {
               mHasPermission = false;
               mPermissionRequested = false;
@@ -667,7 +667,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   private void connectDeviceInternal(String deviceName, int baudRate) {
     try {
-      if(deviceName.isEmpty() || deviceName.length() < 0) {
+      if(deviceName == null || deviceName.isEmpty()) {
         eventEmit(onErrorEvent, createError(Definitions.ERROR_CONNECT_DEVICE_NAME_INVALID, Definitions.ERROR_CONNECT_DEVICE_NAME_INVALID_MESSAGE));
         return;
       }
@@ -1108,7 +1108,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       android.util.Log.e(TAG, "❌ stopConnection: Error closing USB connection (non-fatal): " + e.getMessage(), e);
     }
 
-    appBus2DeviceName.values().removeIf(deviceName::equals);
+    if (deviceName != null) appBus2DeviceName.values().removeIf(deviceName::equals);
 
     Intent intent = new Intent(ACTION_USB_DISCONNECTED);
     intent.putExtra(EXTRA_USB_DEVICE_NAME, deviceName);
@@ -1663,8 +1663,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * Remove commands with matching key
    */
   private void removeCommandsByKey(String deviceName, String commandKey) {
+    if (deviceName == null || commandKey == null) return;
     nativeQueue.removeIf(item ->
-      item.deviceName.equals(deviceName) && item.commandKey.equals(commandKey) &&
+      deviceName.equals(item.deviceName) && commandKey.equals(item.commandKey) &&
       android.util.Log.d(TAG, "Removed duplicate command: " + commandKey) == 0
     );
   }
@@ -3412,7 +3413,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       lastPulseNumber.set(-1);
 
       // Clear global log collection state - heartbeat automatically switches back to full mode
-      if (deviceName.equals(logCollectionDevice)) {
+      if (deviceName != null && deviceName.equals(logCollectionDevice)) {
         isCollectingLogs = false;
         logCollectionDevice = null;
         android.util.Log.i(TAG, "💓 Heartbeat switching back to full status mode");
@@ -3453,7 +3454,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       }
 
       // CRITICAL: Check if collecting for ANOTHER device
-      if (isCollectingLogs && !deviceName.equals(logCollectionDevice)) {
+      if (isCollectingLogs && deviceName != null && !deviceName.equals(logCollectionDevice)) {
         android.util.Log.w(TAG, "⚠️ Cannot start collection - another device active: " +
                           logCollectionDevice);
         return;
