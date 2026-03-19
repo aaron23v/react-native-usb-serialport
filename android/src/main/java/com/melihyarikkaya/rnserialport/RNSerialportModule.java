@@ -193,11 +193,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     private static final byte[] CAMERA_ON_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x35, 0x01, 0x00};  // Location 2101 (0x0835), value 0 = Camera ON
     private static final byte[] CAMERA_OFF_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x35, 0x01, 0x01}; // Location 2101 (0x0835), value 1 = Camera OFF
 
-    // Safety flag: Only allow hardware enable when on control screens
-    private volatile boolean allowHardwareEnable = false;
+    // Control mode: null = not on control screen, "TREATMENT"/"MANUAL"/"MAPPING"/"CALIBRATE" = on control screen
+    private volatile String controlMode = null;
 
-    // Track control mode per device for auto-log collection behavior
-    private final Map<String, String> deviceControlMode = new ConcurrentHashMap<>();
+    // Per-device flag: suppress the next auto-log-collection trigger (set by JS before discard stop command)
+    private final Map<String, Boolean> deviceSuppressNextLogCollection = new ConcurrentHashMap<>();
 
     // Native gateway flags for legacy compatibility
     private static boolean isNativeGateway = false;
@@ -498,36 +498,26 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   }
 
   @ReactMethod
-  public void setAllowHardwareEnable(boolean allow) {
-    android.util.Log.d(TAG, "📍 setAllowHardwareEnable: " + allow);
+  public void setControlMode(String mode) {
+    android.util.Log.d(TAG, "setControlMode: " + mode);
 
-    // LEAVING control mode - turn camera OFF
-    if (!allow && this.allowHardwareEnable) {
-      android.util.Log.d(TAG, "📸 Leaving control mode - turning camera OFF");
-      for (String deviceName : deviceControlMode.keySet()) {
-        if (serialPorts.containsKey(deviceName)) {
-          addToNativeQueue(deviceName, CAMERA_OFF_COMMAND, PRIORITY_NORMAL, "camera_off_leave_control", 0);
-        }
+    String previousMode = this.controlMode;
+    this.controlMode = mode;
+
+    // Leaving control screen -> turn camera OFF
+    if (mode == null && previousMode != null && heartbeatDevice != null) {
+      if (serialPorts.containsKey(heartbeatDevice)) {
+        addToNativeQueue(heartbeatDevice, CAMERA_OFF_COMMAND, PRIORITY_NORMAL, "camera_off_leave_control", 0);
       }
-      deviceControlMode.clear();
+      deviceSuppressNextLogCollection.clear();
     }
 
-    this.allowHardwareEnable = allow;
-  }
-
-  @ReactMethod
-  public void setControlMode(String deviceName, String mode) {
-    android.util.Log.d(TAG, "📍 setControlMode: " + deviceName + " -> " + mode);
-
-    // Turn camera ON when entering control mode (only if not already in control mode)
-    if (!deviceControlMode.containsKey(deviceName)) {
-      android.util.Log.d(TAG, "📸 First time entering control mode - turning camera ON");
-      if (serialPorts.containsKey(deviceName)) {
-        addToNativeQueue(deviceName, CAMERA_ON_COMMAND, PRIORITY_NORMAL, "camera_on_enter", 0);
+    // Entering control screen -> turn camera ON
+    if (mode != null && previousMode == null && heartbeatDevice != null) {
+      if (serialPorts.containsKey(heartbeatDevice)) {
+        addToNativeQueue(heartbeatDevice, CAMERA_ON_COMMAND, PRIORITY_NORMAL, "camera_on_enter", 0);
       }
     }
-
-    deviceControlMode.put(deviceName, mode);
   }
 
   @ReactMethod
@@ -1726,39 +1716,39 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   // ============== React Native Interface Methods ==============
 
   @ReactMethod
-  public void addToQueue(String deviceName, ReadableArray command, String functionCaller) {
+  public void addToQueue(ReadableArray command, String functionCaller) {
     byte[] cmdBytes = readableArrayToByteArray(command);
-    addToNativeQueue(deviceName, cmdBytes, PRIORITY_NORMAL, functionCaller, 0);
+    addToNativeQueue(heartbeatDevice, cmdBytes, PRIORITY_NORMAL, functionCaller, 0);
   }
 
   @ReactMethod
-  public void addToQueueFront(String deviceName, ReadableArray command, String functionCaller) {
+  public void addToQueueFront(ReadableArray command, String functionCaller) {
     byte[] cmdBytes = readableArrayToByteArray(command);
-    addToNativeQueue(deviceName, cmdBytes, PRIORITY_FRONT, functionCaller, 0);
+    addToNativeQueue(heartbeatDevice, cmdBytes, PRIORITY_FRONT, functionCaller, 0);
   }
 
   @ReactMethod
-  public void addToQueueFrontReplace(String deviceName, ReadableArray command, String functionCaller) {
+  public void addToQueueFrontReplace(ReadableArray command, String functionCaller) {
     byte[] cmdBytes = readableArrayToByteArray(command);
-    String commandKey = new CommandItem(deviceName, cmdBytes, 0, "", 0).commandKey;
+    String device = heartbeatDevice != null ? heartbeatDevice : "";
+    String commandKey = new CommandItem(device, cmdBytes, 0, "", 0).commandKey;
 
-    removeCommandsByKey(deviceName, commandKey);
-    addToNativeQueue(deviceName, cmdBytes, PRIORITY_REPLACE, functionCaller, 0);
+    removeCommandsByKey(device, commandKey);
+    addToNativeQueue(heartbeatDevice, cmdBytes, PRIORITY_REPLACE, functionCaller, 0);
   }
 
   @ReactMethod
-  public void writeOnClick(String deviceName, ReadableArray command, String functionCaller) {
-    addToQueueFront(deviceName, command, functionCaller);
+  public void writeOnClick(ReadableArray command, String functionCaller) {
+    addToQueueFront(command, functionCaller);
   }
 
   @ReactMethod
-  public void writeOnClickReplace(String deviceName, ReadableArray command, String functionCaller) {
-    addToQueueFrontReplace(deviceName, command, functionCaller);
+  public void writeOnClickReplace(ReadableArray command, String functionCaller) {
+    addToQueueFrontReplace(command, functionCaller);
   }
 
   @ReactMethod
-  public void writeReadCommand(String deviceName, ReadableArray command, String functionCaller) {
-    // Limit read commands to 2 in queue - simple count to avoid race conditions
+  public void writeReadCommand(ReadableArray command, String functionCaller) {
     int readCommandCount = 0;
     for (CommandItem item : nativeQueue) {
       if (isReadCommand(item.command)) {
@@ -1768,7 +1758,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
 
     if (readCommandCount < 2) {
-      addToQueue(deviceName, command, functionCaller);
+      addToQueue(command, functionCaller);
     } else {
       android.util.Log.d(TAG, "Ignored read command - already 2 in queue");
     }
@@ -1934,9 +1924,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
 
     // Turn camera ON if reconnecting while in control mode
-    String controlMode = deviceControlMode.get(deviceName);
-    if (controlMode != null && allowHardwareEnable) {
-      android.util.Log.d(TAG, "📸 USB reconnect in control mode - turning camera ON");
+    if (controlMode != null) {
+      android.util.Log.d(TAG, "USB reconnect in control mode - turning camera ON");
       addToNativeQueue(deviceName, CAMERA_ON_COMMAND, PRIORITY_NORMAL, "camera_on_reconnect", 0);
     }
 
@@ -2182,7 +2171,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       DeviceStatusData deviceStatus = new DeviceStatusData(packet, deviceName, temperatureCache);
 
       // 🛡️ SAFETY CHECK: Reject hardware enable if not on control screen
-      if (deviceStatus.magVentureEnabled && !allowHardwareEnable) {
+      if (deviceStatus.magVentureEnabled && controlMode == null) {
         android.util.Log.w(TAG, "⚠️ HARDWARE BUTTON PRESSED - REJECTING (not on control screen)");
         addToNativeQueue(deviceName, PG_DISABLE_COMMAND, PRIORITY_FRONT, "reject_hardware_enable", 0);
         return; // Skip event emission - don't notify JS layer
@@ -2201,9 +2190,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       statusParams.putString("eventType", "DEVICE_STATUS");
       WritableMap dataMap = deviceStatus.toWritableMap();
 
-      // Validate timestamp against sliding window before emitting to JS.
-      // Rejected timestamps are omitted — JS skips currentDuration update.
-      long validatedTimestamp = timestampValidator.validate(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus);
+      // Validate timestamp — returns last valid value on garbled packets
+      long validatedTimestamp = timestampValidator.validate(deviceStatus.timestamp, deviceStatus.treatmentStatus);
       if (validatedTimestamp >= 0) {
         dataMap.putDouble("timestamp", validatedTimestamp);
       }
@@ -2305,29 +2293,28 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // Auto-start log collection when treatment completes (treatmentStatus = 0)
       // ✅ FIXED: Only trigger on PLAYING(1)/PAUSED(2) → IDLE(0) transition
       // ✅ FIXED: Only auto-start for TREATMENT mode, not MAPPING/MANUAL modes
-      int lastTreatmentStatus = deviceLastProcessedTreatmentStatus.getOrDefault(deviceName, -1);
-      int lastPulseIndex = deviceLastProcessedPulseIndex.getOrDefault(deviceName, -1);
-      String controlMode = deviceControlMode.getOrDefault(deviceName, "TREATMENT"); // Default to TREATMENT for backward compatibility
+      int prevTreatmentStatus = lastProcessedTreatmentStatus;
+      int prevPulseIndex = lastProcessedPulseIndex;
+      String currentControlMode = this.controlMode != null ? this.controlMode : "TREATMENT";
 
       if (deviceStatus.treatmentStatus == 0 &&
           deviceStatus.lastPulseIndex > 0 &&
-          (lastTreatmentStatus == 1 || lastTreatmentStatus == 2)) {
+          (prevTreatmentStatus == 1 || prevTreatmentStatus == 2)) {
 
-        // Only auto-start log collection in TREATMENT mode
-        if ("TREATMENT".equals(controlMode)) {
+        if ("TREATMENT".equals(currentControlMode)) {
           android.util.Log.i(TAG, "Treatment completion detected: " + deviceName +
-                            " status: " + lastTreatmentStatus + " -> 0, pulses: " +
-                            lastPulseIndex + " -> " + deviceStatus.lastPulseIndex);
+                            " status: " + prevTreatmentStatus + " -> 0, pulses: " +
+                            prevPulseIndex + " -> " + deviceStatus.lastPulseIndex);
 
           autoStartLogCollection(deviceName, deviceStatus.lastPulseIndex);
         } else {
-          android.util.Log.i(TAG, "Sequence completion in " + controlMode + " mode - skipping auto-log collection: " + deviceName);
+          android.util.Log.i(TAG, "Sequence completion in " + currentControlMode + " mode - skipping auto-log collection: " + deviceName);
         }
       }
 
-      // Update last processed values
-      deviceLastProcessedTreatmentStatus.put(deviceName, deviceStatus.treatmentStatus);
-      deviceLastProcessedPulseIndex.put(deviceName, deviceStatus.lastPulseIndex);
+      // Update last processed values (device-path-independent)
+      lastProcessedTreatmentStatus = deviceStatus.treatmentStatus;
+      lastProcessedPulseIndex = deviceStatus.lastPulseIndex;
 
       // Emit MSO status event
       WritableMap msoParams = Arguments.createMap();
@@ -3055,22 +3042,18 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     private static final int WINDOW_SIZE = 10;
     private static final long MAX_DELTA_MS = 10_000L;
 
-    private final ConcurrentHashMap<String, long[]> windows = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Integer> windowCounts = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Integer> lastTreatmentStatus = new ConcurrentHashMap<>();
+    private final long[] window = new long[WINDOW_SIZE];
+    private int count = 0;
+    private int lastTreatmentStatus = -1;
 
-    public long validate(String deviceName, long rawTimestamp, int treatmentStatus) {
-      Integer prevStatus = lastTreatmentStatus.get(deviceName);
-
-      if (prevStatus != null && prevStatus != treatmentStatus) {
-        clearWindow(deviceName);
-        Log.i(TAG, "TIMESTAMP_VALIDATOR: Window cleared for " + deviceName +
-              " (treatmentStatus " + prevStatus + " -> " + treatmentStatus + ")");
+    public synchronized long validate(long rawTimestamp, int treatmentStatus) {
+      // Treatment status change is the only legitimate timer reset — clear window
+      if (lastTreatmentStatus >= 0 && lastTreatmentStatus != treatmentStatus) {
+        clear();
+        Log.i(TAG, "TIMESTAMP_VALIDATOR: Window cleared (treatmentStatus " +
+              lastTreatmentStatus + " -> " + treatmentStatus + ")");
       }
-      lastTreatmentStatus.put(deviceName, treatmentStatus);
-
-      long[] window = windows.computeIfAbsent(deviceName, k -> new long[WINDOW_SIZE]);
-      int count = windowCounts.getOrDefault(deviceName, 0);
+      lastTreatmentStatus = treatmentStatus;
 
       if (count == 0) {
         if (rawTimestamp < 0) {
@@ -3078,39 +3061,33 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           return -1;
         }
         window[0] = rawTimestamp;
-        windowCounts.put(deviceName, 1);
+        count = 1;
         return rawTimestamp;
       }
 
       long lastValid = window[(count - 1) % WINDOW_SIZE];
 
       if (rawTimestamp < lastValid) {
-        Log.w(TAG, "TIMESTAMP_VALIDATOR: Backward jump rejected for " + deviceName +
-              " (last=" + lastValid + ", new=" + rawTimestamp + ")");
-        return -1;
+        Log.w(TAG, "TIMESTAMP_VALIDATOR: Backward jump rejected (last=" + lastValid +
+              ", new=" + rawTimestamp + "), returning lastValid");
+        return lastValid;
       }
 
       long delta = rawTimestamp - lastValid;
       if (delta > MAX_DELTA_MS) {
-        Log.w(TAG, "TIMESTAMP_VALIDATOR: Large delta rejected for " + deviceName +
-              " (last=" + lastValid + ", new=" + rawTimestamp + ", delta=" + delta + "ms)");
-        return -1;
+        Log.w(TAG, "TIMESTAMP_VALIDATOR: Large delta rejected (last=" + lastValid +
+              ", new=" + rawTimestamp + ", delta=" + delta + "ms), returning lastValid");
+        return lastValid;
       }
 
-      int newCount = count + 1;
-      window[(newCount - 1) % WINDOW_SIZE] = rawTimestamp;
-      windowCounts.put(deviceName, newCount);
+      count++;
+      window[(count - 1) % WINDOW_SIZE] = rawTimestamp;
       return rawTimestamp;
     }
 
-    public void clearWindow(String deviceName) {
-      windows.remove(deviceName);
-      windowCounts.remove(deviceName);
-    }
-
-    public void clearDevice(String deviceName) {
-      clearWindow(deviceName);
-      lastTreatmentStatus.remove(deviceName);
+    public synchronized void clear() {
+      count = 0;
+      lastTreatmentStatus = -1;
     }
   }
 
@@ -3233,7 +3210,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       WritableMap dataMap = deviceStatus.toWritableMap();
 
       // Validate timestamp against sliding window before emitting to JS
-      long validatedTimestamp = timestampValidator.validate(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus);
+      long validatedTimestamp = timestampValidator.validate(deviceStatus.timestamp, deviceStatus.treatmentStatus);
       if (validatedTimestamp >= 0) {
         dataMap.putDouble("timestamp", validatedTimestamp);
       }
@@ -3295,8 +3272,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   private final Map<String, Integer> deviceLogIndex = new ConcurrentHashMap<>();
   private final Map<String, Integer> deviceTargetPulses = new ConcurrentHashMap<>();
   private final Map<String, Boolean> deviceLoggingActive = new ConcurrentHashMap<>();
-  private final Map<String, Integer> deviceLastProcessedTreatmentStatus = new ConcurrentHashMap<>();
-  private final Map<String, Integer> deviceLastProcessedPulseIndex = new ConcurrentHashMap<>();
+  private volatile int lastProcessedTreatmentStatus = -1;
+  private volatile int lastProcessedPulseIndex = -1;
 
   // Native-only acknowledgment system for duplicate prevention
   private final Map<String, Boolean> deviceWaitingForResponse = new ConcurrentHashMap<>();
@@ -3397,8 +3374,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // FIX: Reset treatment status tracking to allow next sequence to trigger log collection
       // When log collection is cancelled during sequence transition, we need to clear these
       // so the next sequence's 1→0 transition is properly detected
-      deviceLastProcessedTreatmentStatus.remove(deviceName);
-      deviceLastProcessedPulseIndex.remove(deviceName);
+      lastProcessedTreatmentStatus = -1;
+      lastProcessedPulseIndex = -1;
+      deviceSuppressNextLogCollection.remove(deviceName);
       android.util.Log.d(TAG, "🧹 Reset treatment status tracking for next sequence");
 
       // FIX #9: Clean up per-device packet buffer to prevent memory leaks
@@ -3458,6 +3436,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   private void autoStartLogCollection(String deviceName, int lastPulseIndex) {
     try {
       if (lastPulseIndex <= 0) {
+        return;
+      }
+
+      // Check suppress flag (set by JS before discard/stop to prevent unwanted log collection)
+      if (deviceSuppressNextLogCollection.getOrDefault(deviceName, false)) {
+        android.util.Log.i(TAG, "⏭️ Suppressing auto-log collection for: " + deviceName + " (discard/cancel requested)");
+        deviceSuppressNextLogCollection.put(deviceName, false);
         return;
       }
 
@@ -3928,21 +3913,21 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * @param batchSequence Batch sequence number being acknowledged
    */
   @ReactMethod
-  public void acknowledgePulseBatch(String deviceName, int batchSequence) {
+  public void acknowledgePulseBatch(int batchSequence) {
     try {
       // FIX #9: Initialize to -1 to accept batch 0 (first batch)
       // Previous: getOrDefault(deviceName, 0) rejected batch 0 since 0 != 0+1
       // Fixed: getOrDefault(deviceName, -1) accepts batch 0 since 0 == -1+1
-      int currentAck = devicePulseBatchesAcked.getOrDefault(deviceName, -1);
+      int currentAck = devicePulseBatchesAcked.getOrDefault(heartbeatDevice, -1);
 
       // Only update if this is the next expected sequence (prevents out-of-order ACKs)
       if (batchSequence == currentAck + 1) {
-        devicePulseBatchesAcked.put(deviceName, batchSequence);
-        android.util.Log.d(TAG, "✅ ACK received: batch #" + batchSequence + " from " + deviceName);
+        devicePulseBatchesAcked.put(heartbeatDevice, batchSequence);
+        android.util.Log.d(TAG, "✅ ACK received: batch #" + batchSequence + " from " + heartbeatDevice);
 
         // FIX #5: Emit progress based on ACKs received (actual data confirmed by JS)
-        int sent = devicePulseBatchesSent.getOrDefault(deviceName, 0);
-        int totalPulses = deviceTargetPulses.getOrDefault(deviceName, 0);
+        int sent = devicePulseBatchesSent.getOrDefault(heartbeatDevice, 0);
+        int totalPulses = deviceTargetPulses.getOrDefault(heartbeatDevice, 0);
 
         // FIX #11: Calculate progress based on batches ACKed by JavaScript, not total pulses in Set
         // ISSUE: seenPulses.size() includes ALL pulses native has processed (including batches
@@ -3958,7 +3943,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         double progress = totalPulses > 0 ? (actualPulseCount * 100.0) / totalPulses : 0;
 
         WritableMap progressParams = Arguments.createMap();
-        progressParams.putString("deviceName", deviceName);
+        progressParams.putString("deviceName", heartbeatDevice);
         progressParams.putString("status", "IN_PROGRESS");
         progressParams.putInt("currentIndex", actualPulseCount);  // Use actual pulse count
         progressParams.putInt("totalPulses", totalPulses);
@@ -3966,10 +3951,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         eventEmit("onNativeLogProgress", progressParams);
 
         // Reset inactivity timer on every ACK (10-second window from last ACK)
-        resetInactivityTimer(deviceName);
+        resetInactivityTimer(heartbeatDevice);
 
         // Check if we can complete now that this batch is ACKed
-        checkLogCollectionCompletion(deviceName);
+        checkLogCollectionCompletion(heartbeatDevice);
       } else if (batchSequence <= currentAck) {
         android.util.Log.w(TAG, "⚠️ Duplicate ACK: batch #" + batchSequence +
                           " (already at #" + currentAck + ")");
@@ -4100,10 +4085,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * Called when skipping sequence without session data or cancelling collection
    */
   @ReactMethod
-  public void resetDeviceLog(String deviceName) {
+  public void resetDeviceLog() {
     try {
-      android.util.Log.i(TAG, "Manual device log reset requested for: " + deviceName);
-      nativeResetDeviceLog(deviceName);
+      android.util.Log.i(TAG, "Manual device log reset requested for: " + heartbeatDevice);
+      nativeResetDeviceLog(heartbeatDevice);
     } catch (Exception e) {
       android.util.Log.e(TAG, "Error resetting device log: " + e.getMessage());
     }
@@ -4114,23 +4099,23 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * Native-first: Uses current device state instead of React parameters
    */
   @ReactMethod
-  public void startManualLogCollection(String deviceName) {
+  public void startManualLogCollection() {
     try {
       // Native-first: Get current lastPulseIndex from device processing state
-      int lastPulseIndex = deviceLastProcessedPulseIndex.getOrDefault(deviceName, 0);
+      int lastPulseIndex = lastProcessedPulseIndex > 0 ? lastProcessedPulseIndex : 0;
 
       // CONSISTENCY FIX: Always emit START event first (like autoStartLogCollection does)
       // This ensures JavaScript receives START → COMPLETE for ALL cases (0 or N pulses)
       WritableMap startParams = Arguments.createMap();
-      startParams.putString("deviceName", deviceName);
+      startParams.putString("deviceName", heartbeatDevice);
       startParams.putString("status", "START");
       eventEmit("onNativeLogStatusChange", startParams);
 
       if (lastPulseIndex <= 0) {
-        android.util.Log.w(TAG, "Manual log collection - no pulses available for: " + deviceName + ", emitting immediate completion event");
+        android.util.Log.w(TAG, "Manual log collection - no pulses available for: " + heartbeatDevice + ", emitting immediate completion event");
         // Emit completion event immediately after START for 0 pulses
         WritableMap completeParams = Arguments.createMap();
-        completeParams.putString("deviceName", deviceName);
+        completeParams.putString("deviceName", heartbeatDevice);
         completeParams.putString("status", "COMPLETE");
         completeParams.putInt("currentIndex", 0);
         completeParams.putInt("totalPulses", 0);
@@ -4139,56 +4124,67 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         return;
       }
 
-      android.util.Log.i(TAG, "Manual log collection requested for: " + deviceName + " with " + lastPulseIndex + " pulses");
+      android.util.Log.i(TAG, "Manual log collection requested for: " + heartbeatDevice + " with " + lastPulseIndex + " pulses");
 
-      autoStartLogCollection(deviceName, lastPulseIndex);
+      autoStartLogCollection(heartbeatDevice, lastPulseIndex);
     } catch (Exception e) {
       android.util.Log.e(TAG, "Error in manual log collection: " + e.getMessage());
-      emitLogError(deviceName, "Failed to start manual log collection");
+      emitLogError(heartbeatDevice, "Failed to start manual log collection");
     }
+  }
+
+  /**
+   * React Native method to suppress the next auto-log collection for a device.
+   * Call BEFORE sending the stop/discard command so that when the native layer
+   * detects treatmentStatus 1→0 it skips autoStartLogCollection.
+   */
+  @ReactMethod
+  public void suppressNextLogCollection() {
+    android.util.Log.i(TAG, "🚫 suppressNextLogCollection set for: " + heartbeatDevice);
+    deviceSuppressNextLogCollection.put(heartbeatDevice, true);
   }
 
   /**
    * React Native method to stop log collection (for cancellation)
    */
   @ReactMethod
-  public void stopNativeLogging(String deviceName) {
+  public void stopNativeLogging() {
     try {
-      android.util.Log.i(TAG, "🛑 CANCEL: Stopping log collection for: " + deviceName);
+      android.util.Log.i(TAG, "🛑 CANCEL: Stopping log collection for: " + heartbeatDevice);
 
       // Check if actually collecting for this device
-      if (!deviceLoggingActive.getOrDefault(deviceName, false)) {
-        android.util.Log.w(TAG, "⚠️ CANCEL: No active collection for: " + deviceName);
+      if (!deviceLoggingActive.getOrDefault(heartbeatDevice, false)) {
+        android.util.Log.w(TAG, "⚠️ CANCEL: No active collection for: " + heartbeatDevice);
         return;
       }
 
       // Emit CANCELLED status BEFORE cleanup
       WritableMap params = Arguments.createMap();
-      params.putString("deviceName", deviceName);
+      params.putString("deviceName", heartbeatDevice);
       params.putString("status", "CANCELLED");
       eventEmit("onNativeLogStatusChange", params);
 
       // CRITICAL: Clean up and resume heartbeat
       // CRITICAL: Clear pulse tracking (clearPulseTracking=true) on manual cancel
       // This resets deduplication state since user explicitly cancelled collection
-      cleanupLogCollectionState(deviceName, true, true);
+      cleanupLogCollectionState(heartbeatDevice, true, true);
 
       // Reset device log buffer to prevent stale data
-      nativeResetDeviceLog(deviceName);
+      nativeResetDeviceLog(heartbeatDevice);
 
       android.util.Log.i(TAG, "✅ CANCEL: Log collection stopped, device log reset, and heartbeat resumed");
 
     } catch (Exception e) {
       android.util.Log.e(TAG, "❌ CANCEL: Error stopping log collection: " + e.getMessage());
       // Force cleanup even on error with pulse tracking clear
-      cleanupLogCollectionState(deviceName, true, true);
+      cleanupLogCollectionState(heartbeatDevice, true, true);
     }
   }
 
     @ReactMethod
-    public void loadAutoRampTimeline(String deviceName, ReadableArray timelineData, Promise promise) {
+    public void loadAutoRampTimeline(ReadableArray timelineData, Promise promise) {
         try {
-            autoRampEngine.loadTimeline(deviceName, timelineData);
+            autoRampEngine.loadTimeline(heartbeatDevice, timelineData);
             promise.resolve(true);
         } catch (Exception e) {
             android.util.Log.e(TAG, "Failed to load auto-ramp timeline: " + e.getMessage(), e);
@@ -4197,13 +4193,19 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
 
     @ReactMethod
-    public void advanceAutoRampSequence(String deviceName) {
-        autoRampEngine.advanceSequence(deviceName);
+    public void advanceAutoRampSequence() {
+        autoRampEngine.advanceSequence(heartbeatDevice);
     }
 
     @ReactMethod
-    public void clearAutoRamp(String deviceName) {
-        autoRampEngine.clear(deviceName);
+    public void clearAutoRamp() {
+        autoRampEngine.clear(heartbeatDevice);
+    }
+
+    @ReactMethod
+    public void resetTimestampValidator() {
+        timestampValidator.clear();
+        android.util.Log.i(TAG, "TIMESTAMP_VALIDATOR: Cleared by JS (sequence repeat)");
     }
 
   /**

@@ -195,23 +195,14 @@ interface RNSerialportStatic {
   setDriver(driver: Drivers): void;
 
   /**
-   * Set whether hardware PG enable is allowed (safety mechanism)
+   * Set the control mode for the active device.
+   * Controls hardware PG enable safety, camera on/off, and auto-log collection behavior.
+   * Pass null to clear (when leaving control screen).
    *
-   * @param {boolean} allow Whether to allow hardware PG enable
+   * @param {string | null} mode The control mode ("TREATMENT", "MAPPING", "MANUAL", "CALIBRATE") or null
    * @memberof RNSerialportStatic
    */
-  setAllowHardwareEnable(allow: boolean): void;
-
-  /**
-   * Set the control mode (screen type) for auto-log collection behavior
-   * TREATMENT mode: auto-starts log collection after sequence completion
-   * MAPPING/MANUAL mode: no auto-log collection
-   *
-   * @param {string} deviceName The name of the device
-   * @param {string} mode The control mode ("TREATMENT", "MAPPING", or "MANUAL")
-   * @memberof RNSerialportStatic
-   */
-  setControlMode(deviceName: string, mode: string): void;
+  setControlMode(mode: string | null): void;
 
   //End setter methods
 
@@ -299,65 +290,12 @@ interface RNSerialportStatic {
 
   // ============== Native Queue Methods ==============
 
-  /**
-   * Add a command to the back of the queue (normal priority)
-   *
-   * @param {string} deviceName The name of the device to send the command to
-   * @param {number[]} command The command to be added to the queue
-   * @param {string} functionCaller Identifier for the calling function
-   * @memberof RNSerialportStatic
-   */
-  addToQueue(deviceName: string, command: number[], functionCaller: string): void;
-
-  /**
-   * Add a command to the front of the queue (high priority)
-   *
-   * @param {string} deviceName The name of the device to send the command to
-   * @param {number[]} command The command to be added to the front of the queue
-   * @param {string} functionCaller Identifier for the calling function
-   * @memberof RNSerialportStatic
-   */
-  addToQueueFront(deviceName: string, command: number[], functionCaller: string): void;
-
-  /**
-   * Add a command to the front of the queue, replacing any existing commands with the same signature
-   *
-   * @param {string} deviceName The name of the device to send the command to
-   * @param {number[]} command The command to be added to the front of the queue
-   * @param {string} functionCaller Identifier for the calling function
-   * @memberof RNSerialportStatic
-   */
-  addToQueueFrontReplace(deviceName: string, command: number[], functionCaller: string): void;
-
-  /**
-   * Write a command to the device immediately by adding it to the front of the queue
-   *
-   * @param {string} deviceName The name of the device to send the command to
-   * @param {number[]} command The command to be written
-   * @param {string} functionCaller Identifier for the calling function
-   * @memberof RNSerialportStatic
-   */
-  writeOnClick(deviceName: string, command: number[], functionCaller: string): void;
-
-  /**
-   * Write a command to the device immediately by replacing any existing commands with the same signature
-   *
-   * @param {string} deviceName The name of the device to send the command to
-   * @param {number[]} command The command to be written
-   * @param {string} functionCaller Identifier for the calling function
-   * @memberof RNSerialportStatic
-   */
-  writeOnClickReplace(deviceName: string, command: number[], functionCaller: string): void;
-
-  /**
-   * Write a read command to the device by adding it to the queue (limited to 2 read commands)
-   *
-   * @param {string} deviceName The name of the device to send the command to
-   * @param {number[]} command The read command to be written
-   * @param {string} functionCaller Identifier for the calling function
-   * @memberof RNSerialportStatic
-   */
-  writeReadCommand(deviceName: string, command: number[], functionCaller: string): void;
+  addToQueue(command: number[], functionCaller: string): void;
+  addToQueueFront(command: number[], functionCaller: string): void;
+  addToQueueFrontReplace(command: number[], functionCaller: string): void;
+  writeOnClick(command: number[], functionCaller: string): void;
+  writeOnClickReplace(command: number[], functionCaller: string): void;
+  writeReadCommand(command: number[], functionCaller: string): void;
 
   /**
    * Clear all commands from the queue
@@ -462,7 +400,7 @@ interface RNSerialportStatic {
    * @param {string} deviceName The name of the device to start log collection for
    * @memberof RNSerialportStatic
    */
-  startManualLogCollection(deviceName: string): void;
+  startManualLogCollection(): void;
 
   /**
    * Stop native logging for specified device
@@ -470,7 +408,16 @@ interface RNSerialportStatic {
    * @param {string} deviceName The name of the device to stop logging for
    * @memberof RNSerialportStatic
    */
-  stopNativeLogging(deviceName: string): void;
+  stopNativeLogging(): void;
+
+  /**
+   * Suppress the next auto-log collection trigger for a device.
+   * Call BEFORE sending the stop/discard command so that when the native layer
+   * detects treatmentStatus 1→0 it skips autoStartLogCollection.
+   * @param {string} deviceName The device name
+   * @memberof RNSerialportStatic
+   */
+  suppressNextLogCollection(): void;
 
   /**
    * Acknowledge receipt and processing of a pulse batch from native layer
@@ -480,7 +427,7 @@ interface RNSerialportStatic {
    * @param {number} batchSequence The sequence number of the batch being acknowledged
    * @memberof RNSerialportStatic
    */
-  acknowledgePulseBatch(deviceName: string, batchSequence: number): void;
+  acknowledgePulseBatch(batchSequence: number): void;
 
   /**
    * Reset device log buffer (clear treatment log table)
@@ -488,7 +435,9 @@ interface RNSerialportStatic {
    * @param {string} deviceName The name of the device
    * @memberof RNSerialportStatic
    */
-  resetDeviceLog(deviceName: string): void;
+  resetDeviceLog(): void;
+
+  resetTimestampValidator(): void;
 
 }
 export var RNSerialport: RNSerialportStatic;
