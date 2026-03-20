@@ -504,6 +504,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     String previousMode = this.controlMode;
     this.controlMode = mode;
 
+    // Clear timestamp validator on control mode transitions (not reconnections)
+    timestampValidator.clear();
+
     // Leaving control screen -> turn camera OFF
     if (mode == null && previousMode != null && heartbeatDevice != null) {
       if (serialPorts.containsKey(heartbeatDevice)) {
