@@ -1,6 +1,6 @@
 {
   "name": "react-native-usb-serialport",
-  "version": "3.5.1",
+  "version": "3.6.0",
   "description": "High performance JAVA native gateway passthrough between multi usb serial port and multi socket without JS bridge, or just use multi usb serial port or socket alone",
   "main": "index.js",
   "scripts": {

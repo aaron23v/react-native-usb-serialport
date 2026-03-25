@@ -2764,6 +2764,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     public final boolean psuOvervoltage;
     public final boolean coilOvercurrent;
     public final boolean bleederResistor;
+    public final boolean hvOverheat;
+    public final boolean lowCurrent;
 
     // Additional fields for complete SerialUtils.ts parity
     public final boolean manualCoilSwitchEnabled;
@@ -2862,8 +2864,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       this.psuOvervoltage = (buffer[7] & 0x40) != 0;
       this.coilOvercurrent = (buffer[7] & 0x80) != 0;
 
-      // Parse additional buffer[8] flags to match SerialUtils.ts
-      this.bleederResistor = (buffer[8] & 0x02) != 0;
+      // Parse additional buffer[8] flags (Error LSB - byte 3)
+      this.hvOverheat = (buffer[8] & 0x01) != 0;       // Bit 0: HV Board overheat
+      this.bleederResistor = (buffer[8] & 0x02) != 0;  // Bit 1: Bleeder overheat
+      this.lowCurrent = (buffer[8] & 0x04) != 0;       // Bit 2: Low current
       // Parse buffer[5] flags to match SerialUtils.ts
       this.usbHubReset = (buffer[5] & 0x20) != 0;
       this.pgDisabledComReset = (buffer[5] & 0x40) != 0;
@@ -2960,6 +2964,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       map.putBoolean("psuOvervoltage", psuOvervoltage);
       map.putBoolean("coilOvercurrent", coilOvercurrent);
       map.putBoolean("bleederResistor", bleederResistor);
+      map.putBoolean("hvOverheat", hvOverheat);
+      map.putBoolean("lowCurrent", lowCurrent);
 
       // Additional fields for complete SerialUtils.ts parity
       map.putBoolean("manualCoilSwitchEnabled", manualCoilSwitchEnabled);
