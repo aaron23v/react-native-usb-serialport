@@ -439,5 +439,43 @@ interface RNSerialportStatic {
 
   resetTimestampValidator(): void;
 
+  // ============== Auto-Ramp Methods ==============
+
+  /**
+   * Load auto-ramp timeline data from previous session.
+   * Called once before treatment starts. Native engine replays amplitude
+   * deltas on each heartbeat based on hardware treatment timestamp.
+   *
+   * @param {Array} timelineData Per-sequence timeline of amplitude deltas
+   * @returns {Promise<boolean>}
+   * @memberof RNSerialportStatic
+   */
+  loadAutoRampTimeline(timelineData: Array<{
+    sequenceIndex: number;
+    sequenceId: string;
+    timeline: Array<{
+      relativeTimestamp: number;
+      amplitudeDelta: number;
+      pulseNumber: number;
+      trainNumber: number;
+    }>;
+  }>): Promise<boolean>;
+
+  /**
+   * Advance native auto-ramp engine to next sequence's keyframe list.
+   * Called during sequence transitions.
+   *
+   * @memberof RNSerialportStatic
+   */
+  advanceAutoRampSequence(): void;
+
+  /**
+   * Clear all auto-ramp state for the current device.
+   * Called on session cleanup/reset.
+   *
+   * @memberof RNSerialportStatic
+   */
+  clearAutoRamp(): void;
+
 }
 export var RNSerialport: RNSerialportStatic;
