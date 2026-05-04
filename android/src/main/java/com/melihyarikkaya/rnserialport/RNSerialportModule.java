@@ -3054,12 +3054,21 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * On treatmentStatus change: window is cleared to allow legitimate timer resets.
    */
   public static class TimestampValidator {
-    private static final int WINDOW_SIZE = 10;
-    private static final long MAX_DELTA_MS = 10_000L;
+    private static final int  WINDOW_SIZE         = 10;
+    private static final long MAX_DELTA_MS        = 10_000L;
+    // Gap-recovery: after MAX_DELTA_MS rejection, accept once we see N consecutive
+    // rejected timestamps that are themselves coherent (monotonic, ~heartbeat-spaced).
+    // A real connection gap produces a ticking stream on resume; garbage produces
+    // isolated spikes. 3 rejections at the 250ms heartbeat = ~750ms recovery latency.
+    private static final int  ACCEPT_AFTER_N      = 3;
+    private static final long REJECT_COHERENCE_MS = 2_000L;
 
     private final long[] window = new long[WINDOW_SIZE];
-    private int count = 0;
-    private int lastTreatmentStatus = -1;
+    private int  count = 0;
+    private int  lastTreatmentStatus = -1;
+
+    private long lastRejected = -1;
+    private int  rejectStreak = 0;
 
     public synchronized long validate(long rawTimestamp, int treatmentStatus) {
       // Treatment status change is the only legitimate timer reset — clear window
@@ -3083,6 +3092,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       long lastValid = window[(count - 1) % WINDOW_SIZE];
 
       if (rawTimestamp < lastValid) {
+        rejectStreak = 0;
+        lastRejected = -1;
         Log.w(TAG, "TIMESTAMP_VALIDATOR: Backward jump rejected (last=" + lastValid +
               ", new=" + rawTimestamp + "), returning lastValid");
         return lastValid;
@@ -3090,11 +3101,32 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
       long delta = rawTimestamp - lastValid;
       if (delta > MAX_DELTA_MS) {
+        boolean coherent = lastRejected > 0
+            && rawTimestamp >= lastRejected
+            && (rawTimestamp - lastRejected) <= REJECT_COHERENCE_MS;
+
+        rejectStreak = coherent ? rejectStreak + 1 : 1;
+        lastRejected = rawTimestamp;
+
+        if (rejectStreak >= ACCEPT_AFTER_N) {
+          Log.w(TAG, "TIMESTAMP_VALIDATOR: Gap recovery — accepting after " +
+                rejectStreak + " coherent rejections (last=" + lastValid +
+                ", new=" + rawTimestamp + ", delta=" + delta + "ms)");
+          count = 1;
+          window[0] = rawTimestamp;
+          rejectStreak = 0;
+          lastRejected = -1;
+          return rawTimestamp;
+        }
+
         Log.w(TAG, "TIMESTAMP_VALIDATOR: Large delta rejected (last=" + lastValid +
-              ", new=" + rawTimestamp + ", delta=" + delta + "ms), returning lastValid");
+              ", new=" + rawTimestamp + ", delta=" + delta + "ms, streak=" +
+              rejectStreak + "), returning lastValid");
         return lastValid;
       }
 
+      rejectStreak = 0;
+      lastRejected = -1;
       count++;
       window[(count - 1) % WINDOW_SIZE] = rawTimestamp;
       return rawTimestamp;
@@ -3103,6 +3135,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     public synchronized void clear() {
       count = 0;
       lastTreatmentStatus = -1;
+      lastRejected = -1;
+      rejectStreak = 0;
     }
   }
 
