@@ -273,32 +273,47 @@ public class PacketAssembler {
 
     /**
      * Handle invalid header at buffer start.
-     * Strategy: Discard ONLY 1 byte and retry (minimal loss approach).
+     * Strategy: Scan forward to the next plausible header byte (0x66/0xAA) and
+     * discard everything before it in a single pass.
      *
-     * FIX: Previously would scan entire buffer and discard hundreds of bytes.
-     * Now discards only the single invalid byte.
+     * Rationale: USB stream desync can leave the buffer offset by N bytes within
+     * a packet's payload. Walking 1 byte at a time per feedBytes call lets new
+     * data arrive faster than the assembler can chew through the stale bytes,
+     * causing the timer/UI to freeze (see may-2026 incident). Forward scanning
+     * recovers in a single pass while still discarding only what's necessary.
+     *
+     * Equivalence: same total bytes discarded, same packets ultimately extracted.
+     * Only wall-clock recovery time and log volume change.
      */
     private void handleInvalidHeader() {
         byte invalidByte = buffer[0];
-        Log.w(TAG, "❌ INVALID HEADER at position 0: 0x" + String.format("%02X", invalidByte) +
-              " (" + invalidByte + ") - discarding 1 byte");
 
-        // Track failure
+        // Scan forward for the next plausible header byte
+        int skipTo = 1;
+        while (skipTo < size && buffer[skipTo] != HEADER_READ && buffer[skipTo] != HEADER_ACK) {
+            skipTo++;
+        }
+
+        Log.w(TAG, "❌ INVALID HEADER at position 0: 0x" + String.format("%02X", invalidByte) +
+              " (" + invalidByte + ") - resync skip " + skipTo + " byte(s)");
+
+        // Track failure (count desync events, not individual bytes)
         String reason = "Invalid header: 0x" + String.format("%02X", invalidByte);
         validationFailures.put(reason, validationFailures.getOrDefault(reason, 0) + 1);
 
-        // Discard only this single byte
-        if (size > 1) {
-            System.arraycopy(buffer, 1, buffer, 0, size - 1);
+        // Slide buffer forward by skipTo bytes
+        if (size > skipTo) {
+            System.arraycopy(buffer, skipTo, buffer, 0, size - skipTo);
         }
-        size--;
-        totalBytesDiscarded++;
+        size -= skipTo;
+        totalBytesDiscarded += skipTo;
 
-        // Check if next byte is a valid header (helps detect sync issues)
+        // Note about next byte (helps confirm resync)
         if (size >= 1) {
             byte nextByte = buffer[0];
             if (nextByte == HEADER_READ || nextByte == HEADER_ACK) {
-                Log.i(TAG, "✓ RESYNC: Found valid header at next position");
+                Log.i(TAG, "✓ RESYNC: Buffer now positioned at 0x" +
+                      String.format("%02X", nextByte) + " — retrying validation");
             }
         }
     }
@@ -417,6 +432,22 @@ public class PacketAssembler {
                 .limit(3)
                 .forEach(entry -> Log.i(TAG, "   " + entry.getKey() + ": " + entry.getValue()));
         }
+    }
+
+    /**
+     * Reset the buffer to an empty state (for error recovery / device detach).
+     *
+     * Stats (totalPacketsExtracted, totalBytesDiscarded, fragmentationCount,
+     * validationFailures) are intentionally preserved for diagnostics — they
+     * track the lifetime of this assembler instance, not the lifetime of one
+     * connection.
+     *
+     * Callers: NativePacketBuffer.clear() (on processing exception),
+     * RNSerialportModule.stopConnection() (on device detach / disconnect).
+     */
+    public synchronized void reset() {
+        Log.i(TAG, "🔄 RESET: Clearing buffer (had " + size + " bytes), preserving stats");
+        size = 0;
     }
 
     /**

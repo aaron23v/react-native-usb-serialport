@@ -196,6 +196,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // Control mode: null = not on control screen, "TREATMENT"/"MANUAL"/"MAPPING"/"CALIBRATE" = on control screen
     private volatile String controlMode = null;
 
+    // Camera recovery on firmware-triggered USB hub reset.
+    // lastKnownCameraOn snapshots the firmware's camera-power bit from the most recent status packet.
+    // reconnectAfterDetach is set on USB detach and consumed by the first post-reconnect status packet;
+    // if that packet reports usbHubReset, we power-cycle the camera to unstick the UVC preview.
+    private volatile boolean lastKnownCameraOn = false;
+    private volatile boolean reconnectAfterDetach = false;
+
     // Per-device flag: suppress the next auto-log-collection trigger (set by JS before discard stop command)
     private final Map<String, Boolean> deviceSuppressNextLogCollection = new ConcurrentHashMap<>();
 
@@ -365,6 +372,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           }
 
           String deviceName = device.getDeviceName();
+          reconnectAfterDetach = true;
           eventEmit(onDeviceDetachedEvent, deviceName);
           stopConnection(deviceName);
           serialPorts.remove(deviceName);
@@ -1092,6 +1100,14 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // This ensures libusb won't try to emit events after we start closing
     serialPorts.remove(deviceName);
     android.util.Log.d(TAG, "🛑 stopConnection: Removed serial port from active map");
+
+    // Clear any partial bytes left in the assembler so a future reconnect
+    // (potentially with the same deviceName) does not see stale data and desync.
+    NativePacketBuffer staleBuffer = devicePacketBuffers.get(deviceName);
+    if (staleBuffer != null) {
+      staleBuffer.clear();
+      android.util.Log.i(TAG, "🛑 stopConnection: Cleared packet buffer for: " + deviceName);
+    }
 
     // Give libusb time to finish processing any pending events
     // This prevents SIGSEGV in libusb_handle_events_timeout_completed
@@ -2018,6 +2034,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
      */
     public synchronized void clear() {
       android.util.Log.d(TAG, "Clearing packet assembler");
+      assembler.reset();
     }
 
     /**
@@ -2178,6 +2195,29 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // Parse device status using existing native data structure with temperature smoothing.
       // Only reached for packets that passed integrity validation.
       DeviceStatusData deviceStatus = new DeviceStatusData(packet, deviceName, temperatureCache);
+
+      // 🎥 CAMERA RECOVERY on firmware-triggered USB hub reset.
+      // Snapshot pre-update camera state, then update the cache from this packet.
+      // The first post-reconnect status packet decides whether to recover: if the firmware
+      // reports usbHubReset and camera was on before the disconnect, the UVC preview is
+      // likely stuck after the bus re-enumeration — power-cycle via byte 2101 to unstick it.
+      boolean cameraWasOn = lastKnownCameraOn;
+      lastKnownCameraOn = deviceStatus.cameraEnabled;
+
+      if (reconnectAfterDetach) {
+        reconnectAfterDetach = false; // first post-reconnect packet consumes the flag
+        if (deviceStatus.usbHubReset && cameraWasOn && controlMode != null) {
+          final String dev = deviceName;
+          android.util.Log.i(TAG, "🎥 Hub reset detected with camera on — scheduling recovery cycle");
+          queueScheduler.schedule(() -> {
+            if (!lastKnownCameraOn) return; // user toggled camera off during the delay
+            addToNativeQueue(dev, CAMERA_OFF_COMMAND, PRIORITY_NORMAL, "camera_recovery_off", 0);
+            queueScheduler.schedule(() ->
+              addToNativeQueue(dev, CAMERA_ON_COMMAND, PRIORITY_NORMAL, "camera_recovery_on", 0),
+              500, TimeUnit.MILLISECONDS);
+          }, 1500, TimeUnit.MILLISECONDS);
+        }
+      }
 
       // 🛡️ SAFETY CHECK: Reject hardware enable if not on control screen
       if (deviceStatus.magVentureEnabled && controlMode == null) {
