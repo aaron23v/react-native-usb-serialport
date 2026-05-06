@@ -1027,6 +1027,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
               return;
             }
 
+            android.util.Log.i(TAG, "[RX] " + bytes.length + " bytes: " + Definitions.bytesToHex(bytes));
+
             final byte[] bytesCopy = Arrays.copyOf(bytes, bytes.length);
             final String deviceName = device.getDeviceName();
 
