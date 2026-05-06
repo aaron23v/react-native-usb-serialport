@@ -446,7 +446,9 @@ public class PacketAssembler {
      * RNSerialportModule.stopConnection() (on device detach / disconnect).
      */
     public synchronized void reset() {
-        Log.i(TAG, "🔄 RESET: Clearing buffer (had " + size + " bytes), preserving stats");
+        if (size > 0) {
+            Log.i(TAG, "🔄 RESET: Clearing buffer (had " + size + " bytes), preserving stats");
+        }
         size = 0;
     }
 

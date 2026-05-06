@@ -791,6 +791,15 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       return;
     }
 
+    // Drop any orphan bytes from the previous response window before issuing a new request.
+    // In normal operation the buffer is empty here (response was extracted ~30ms after prev TX,
+    // 220ms before this TX). Non-empty means a truncated/aborted prior response left orphans;
+    // appending the new response to those orphans causes cross-frame extraction (cascade bug).
+    NativePacketBuffer staleBuffer = devicePacketBuffers.get(deviceName);
+    if (staleBuffer != null) {
+      staleBuffer.clear();
+    }
+
     // Log the write operation
     android.util.Log.i(TAG, String.format("[TX] writeSerialportBytes: device=%s, bytes=%d, data=%s",
         deviceName, bytes.length, Definitions.bytesToHex(bytes)));
