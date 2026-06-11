@@ -192,10 +192,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // read from the device-status packet (bytes 9=major, 10=minor) and cached in
     // PacketIntegrityValidator. Below this version, behaviour is byte-identical to before.
     //
-    // EDITABLE THRESHOLD: the RevG doc says "starting from version V0.18". Adjust here if
-    // the actual cut-in version differs.
+    // EDITABLE THRESHOLD: CRC is active from PG firmware V0.16 onward (V16 and above).
     private static final int CRC_MIN_FW_MAJOR = 0;
-    private static final int CRC_MIN_FW_MINOR = 18;
+    private static final int CRC_MIN_FW_MINOR = 16;
     // Length of the CRC-16 trailer appended to commands/responses when CRC is enabled.
     private static final int CRC_TRAILER_LEN = 2;
     // Per-device CRC enablement: null = undecided (fw not yet known), TRUE/FALSE once decided.
