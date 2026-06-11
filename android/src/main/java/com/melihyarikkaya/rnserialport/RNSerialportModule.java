@@ -186,6 +186,24 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     private final PacketIntegrityValidator packetIntegrityValidator = new PacketIntegrityValidator(TAG);
     private final TimestampValidator timestampValidator = new TimestampValidator();
 
+    // CRC-16 (protocol RevG, section 1.3.5). The PG started including a CRC on read
+    // responses + write commands/ACKs from firmware V0.18 onward. The app stays
+    // backward compatible by gating all CRC logic on the PG firmware version, which is
+    // read from the device-status packet (bytes 9=major, 10=minor) and cached in
+    // PacketIntegrityValidator. Below this version, behaviour is byte-identical to before.
+    //
+    // EDITABLE THRESHOLD: the RevG doc says "starting from version V0.18". Adjust here if
+    // the actual cut-in version differs.
+    private static final int CRC_MIN_FW_MAJOR = 0;
+    private static final int CRC_MIN_FW_MINOR = 18;
+    // Length of the CRC-16 trailer appended to commands/responses when CRC is enabled.
+    private static final int CRC_TRAILER_LEN = 2;
+    // Per-device CRC enablement: null = undecided (fw not yet known), TRUE/FALSE once decided.
+    private final Map<String, Boolean> crcEnabledByDevice = new ConcurrentHashMap<>();
+    // Maps a command key (first 5 bytes) to its human-readable functionCaller, so a CRC
+    // mismatch on a write ACK can be logged against a meaningful request id.
+    private final Map<String, String> callerByCommandKey = new ConcurrentHashMap<>();
+
     // Special Command Signatures
     private static final byte[] READ_COMMAND_SIG = {102, 0, 0, 0, 51};
     private static final byte[] RESET_COMMAND_SIG = {(byte)170, 0, 8, 55, 15, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192};
@@ -792,11 +810,19 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       staleBuffer.clear();
     }
 
+    // Append the 16-bit CRC to write commands (header 0xAA) once the PG firmware is known
+    // to support it (>= V0.18). Read commands (0x66) carry no CRC per the protocol, and a
+    // legacy PG never enables CRC, so this is a no-op for older firmware.
+    byte[] outgoing = bytes;
+    if (bytes.length > 0 && bytes[0] == (byte) 0xAA && isCrcEnabled(deviceName)) {
+      outgoing = Crc16.append(bytes);
+    }
+
     // Log the write operation
     android.util.Log.i(TAG, String.format("[TX] writeSerialportBytes: device=%s, bytes=%d, data=%s",
-        deviceName, bytes.length, Definitions.bytesToHex(bytes)));
+        deviceName, outgoing.length, Definitions.bytesToHex(outgoing)));
 
-    serialPort.write(bytes);
+    serialPort.write(outgoing);
   }
 
   @ReactMethod
@@ -1111,6 +1137,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       staleBuffer.clear();
       android.util.Log.i(TAG, "🛑 stopConnection: Cleared packet buffer for: " + deviceName);
     }
+
+    // Forget CRC enablement + cached firmware identity so a reconnected (or different) PG
+    // re-evaluates its firmware version before CRC is applied again.
+    crcEnabledByDevice.remove(deviceName);
+    packetIntegrityValidator.reset();
 
     // Give libusb time to finish processing any pending events
     // This prevents SIGSEGV in libusb_handle_events_timeout_completed
@@ -1537,6 +1568,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
 
     CommandItem item = new CommandItem(deviceName, command, priority, functionCaller, retryCount);
+    // Remember the caller for this command signature so a CRC mismatch on its ACK can be
+    // logged against a meaningful request id.
+    if (functionCaller != null && !functionCaller.isEmpty()) {
+      callerByCommandKey.put(item.commandKey, functionCaller);
+    }
     boolean added = nativeQueue.offer(item);
 
     if (added) {
@@ -2033,6 +2069,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
 
     /**
+     * Enable/disable CRC trailer framing on the underlying assembler.
+     */
+    public synchronized void setCrcEnabled(boolean enabled) {
+      assembler.setCrcEnabled(enabled);
+    }
+
+    /**
      * Clear the assembler state (for error recovery)
      */
     public synchronized void clear() {
@@ -2053,6 +2096,48 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * @param deviceName The USB device name
    * @param rawBytes Raw bytes from USB callback
    */
+  /** True when the PG firmware (major.minor) is at or beyond the CRC cut-in version. */
+  private boolean fwSupportsCrc(int major, int minor) {
+    if (major != CRC_MIN_FW_MAJOR) return major > CRC_MIN_FW_MAJOR;
+    return minor >= CRC_MIN_FW_MINOR;
+  }
+
+  /** Whether CRC framing/validation is active for this device (false until fw is known). */
+  private boolean isCrcEnabled(String deviceName) {
+    return Boolean.TRUE.equals(crcEnabledByDevice.get(deviceName));
+  }
+
+  /**
+   * Decide CRC enablement for a device once the PG firmware version is known, and push
+   * the decision to the device's packet assembler. Called at the start of each RX batch
+   * (before extraction) so framing and validation never disagree mid-batch. No-op once
+   * decided; cleared on disconnect so a reconnected/different PG re-evaluates.
+   */
+  private void updateCrcEnablement(String deviceName, NativePacketBuffer buffer) {
+    if (crcEnabledByDevice.containsKey(deviceName)) return;   // already decided
+    if (!packetIntegrityValidator.isFwKnown()) return;        // need a clean status packet first
+    int major = packetIntegrityValidator.getCachedFwMajor();
+    int minor = packetIntegrityValidator.getCachedFwMinor();
+    boolean enabled = fwSupportsCrc(major, minor);
+    crcEnabledByDevice.put(deviceName, enabled);
+    buffer.setCrcEnabled(enabled);
+    android.util.Log.i(TAG, "CRC " + (enabled ? "ENABLED" : "disabled (legacy PG)") +
+        " for " + deviceName + " — PG firmware V" + major + "." + minor);
+  }
+
+  /**
+   * Resolve a human-readable request id for a write ACK, for CRC-mismatch logging.
+   * Uses the functionCaller recorded at enqueue time (keyed by the first 5 bytes),
+   * falling back to the raw 5-byte command signature.
+   */
+  private String writeRequestId(byte[] ackPacket) {
+    String key = new CommandItem("", ackPacket, 0, "", 0).commandKey;
+    String caller = callerByCommandKey.get(key);
+    if (caller != null && !caller.isEmpty()) return caller;
+    int sigLen = Math.min(ackPacket.length, 5);
+    return Definitions.bytesToHex(java.util.Arrays.copyOf(ackPacket, sigLen));
+  }
+
   private void processNativePackets(String deviceName, byte[] rawBytes) {
     try {
       // FIX #9: Get or create per-device buffer for parallel processing
@@ -2061,6 +2146,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           deviceName,
           k -> new NativePacketBuffer()
       );
+
+      // Decide CRC enablement before extracting, so the assembler's framing flag and
+      // the router's validation are consistent for every packet in this batch.
+      updateCrcEnablement(deviceName, buffer);
 
       // Use device-specific packet buffer to assemble complete packets
       List<byte[]> completePackets = buffer.appendAndExtractPackets(rawBytes);
@@ -2109,6 +2198,42 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         android.util.Log.w(TAG, "Invalid packet header: " + header + " (expected 102 or 170)");
         emitPacketProcessingError(deviceName, "INVALID_HEADER", packet);
         return;
+      }
+
+      // CRC validation (protocol RevG, firmware >= V0.18). When enabled, every read
+      // response and write ACK carries a 2-byte CRC trailer over all preceding bytes.
+      if (isCrcEnabled(deviceName) && packet.length >= 5 + CRC_TRAILER_LEN) {
+        int n = packet.length;
+        int crcCalc = Crc16.compute(packet, 0, n - CRC_TRAILER_LEN);
+        int crcRecv = ((packet[n - CRC_TRAILER_LEN] & 0xFF) << 8) | (packet[n - 1] & 0xFF);
+        boolean crcOk = (crcCalc == crcRecv);
+
+        if (header == (byte) 170) {
+          // Write ACK. On mismatch we cannot know if the write succeeded — per spec we do
+          // nothing and do NOT retry. processWriteAcknowledgment only clears the retry
+          // timeout (no state change), so passing the (CRC-stripped) ACK through both
+          // suppresses the retry and changes nothing — exactly the required behaviour.
+          if (!crcOk) {
+            android.util.Log.e(TAG, "CRC for request " + writeRequestId(packet) +
+                              " does not match (calc=0x" + String.format("%04X", crcCalc) +
+                              ", recv=0x" + String.format("%04X", crcRecv) + ")");
+          }
+          processWriteAcknowledgment(deviceName, java.util.Arrays.copyOf(packet, n - CRC_TRAILER_LEN));
+          return;
+        }
+
+        // Read response. On mismatch, ignore the response entirely — the next status read
+        // (~250ms) supersedes it.
+        if (!crcOk) {
+          int loc = convertThreeBytesToNumber(packet, 1);
+          android.util.Log.e(TAG, "CRC for request read@0x" + String.format("%06X", loc) +
+                            " does not match (calc=0x" + String.format("%04X", crcCalc) +
+                            ", recv=0x" + String.format("%04X", crcRecv) + ")");
+          return;
+        }
+
+        // Valid CRC — strip the trailer and continue with normal routing.
+        packet = java.util.Arrays.copyOf(packet, n - CRC_TRAILER_LEN);
       }
 
       // Handle write acknowledgment packets (header 170)

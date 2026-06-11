@@ -40,8 +40,10 @@ public class PacketIntegrityValidator {
 
     private final String tag;
 
-    // Indicates whether session-stable fields have been cached from first clean packet
-    private boolean cached = false;
+    // Indicates whether session-stable fields have been cached from first clean packet.
+    // Volatile: written from the disconnect thread via reset(), read from the USB
+    // processing thread.
+    private volatile boolean cached = false;
 
     // Cached PG firmware version
     private int cachedFwMajor;
@@ -218,5 +220,29 @@ public class PacketIntegrityValidator {
     /** Convert two bytes (high, low) to unsigned int — mirrors RNSerialportModule.convertTwoBytes */
     private static int twoBytes(byte high, byte low) {
         return ((high & 0xFF) << 8) | (low & 0xFF);
+    }
+
+    /** Whether the session-stable fields (incl. PG firmware version) have been cached yet. */
+    public boolean isFwKnown() {
+        return cached;
+    }
+
+    /** Cached PG firmware major revision (valid once {@link #isFwKnown()} is true). */
+    public int getCachedFwMajor() {
+        return cachedFwMajor;
+    }
+
+    /** Cached PG firmware minor revision (valid once {@link #isFwKnown()} is true). */
+    public int getCachedFwMinor() {
+        return cachedFwMinor;
+    }
+
+    /**
+     * Forget all cached session-stable fields so the next clean packet re-caches them.
+     * Call on device detach/disconnect so a different PG re-establishes its identity
+     * (including firmware version, which gates CRC).
+     */
+    public void reset() {
+        cached = false;
     }
 }

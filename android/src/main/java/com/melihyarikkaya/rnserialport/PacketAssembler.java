@@ -46,6 +46,12 @@ public class PacketAssembler {
     private static final int DEVICE_STATUS_SIZE = 65;
     private static final int MAX_VALID_LOCATION = 180000; // Upper bound for sanity check
 
+    // CRC-16 trailer length (protocol RevG, from PG firmware >= V0.18). When enabled,
+    // every read response and write ACK carries 2 extra trailing CRC bytes that must be
+    // accounted for in framing, or the stream desyncs. Toggled by setCrcEnabled().
+    private static final int CRC_LEN = 2;
+    private boolean crcEnabled = false;
+
     private final byte[] buffer = new byte[BUFFER_SIZE];
     private int size = 0;
 
@@ -61,6 +67,19 @@ public class PacketAssembler {
      * Feed new bytes into the assembler and extract complete packets.
      * Handles fragmentation gracefully without aggressive garbage removal.
      */
+    /**
+     * Enable/disable framing for the 2-byte CRC trailer. Set once the PG firmware
+     * version is known to support CRC (>= V0.18). When enabled, packets are framed
+     * with the extra trailing CRC bytes carried through as trailing payload so the
+     * downstream router can validate them.
+     */
+    public synchronized void setCrcEnabled(boolean enabled) {
+        if (this.crcEnabled != enabled) {
+            Log.i(TAG, "CRC framing " + (enabled ? "ENABLED" : "DISABLED"));
+        }
+        this.crcEnabled = enabled;
+    }
+
     public synchronized List<Packet> feedBytes(byte[] newBytes) {
         if (newBytes == null || newBytes.length == 0) {
             return new ArrayList<>();
@@ -231,10 +250,13 @@ public class PacketAssembler {
             result.packetType = "OTHER_READ";
         }
 
-        int totalSize = HEADER_SIZE + expectedDataSize;
+        // CRC trailer (when enabled) adds 2 bytes after the data payload.
+        int crcLen = crcEnabled ? CRC_LEN : 0;
+        int totalSize = HEADER_SIZE + expectedDataSize + crcLen;
         result.expectedTotalSize = totalSize;
         result.location = location;
         result.dataSize = expectedDataSize;
+        result.crcLen = crcLen;
 
         // Check if we have the complete packet
         if (size >= totalSize) {
@@ -252,10 +274,15 @@ public class PacketAssembler {
     private Packet extractPacket(PacketValidation validation) {
         byte header = buffer[0];
         byte originalSizeByte = buffer[4]; // Preserve original size byte from hardware
-        byte[] data = new byte[validation.dataSize];
 
-        if (validation.dataSize > 0) {
-            System.arraycopy(buffer, HEADER_SIZE, data, 0, validation.dataSize);
+        // Carry the CRC trailer (if any) through as trailing payload so the router can
+        // validate it. byte 4 (originalSizeByte) stays = firmware's data count, so all
+        // downstream fixed-offset parsing is unaffected by the extra trailing bytes.
+        int payloadLen = validation.dataSize + validation.crcLen;
+        byte[] data = new byte[payloadLen];
+
+        if (payloadLen > 0) {
+            System.arraycopy(buffer, HEADER_SIZE, data, 0, payloadLen);
         }
 
         // Use 4-argument constructor to preserve original size byte for ACK packets
@@ -392,7 +419,7 @@ public class PacketAssembler {
                 dataSize = 0;
             }
 
-            int totalSize = HEADER_SIZE + dataSize;
+            int totalSize = HEADER_SIZE + dataSize + (crcEnabled ? CRC_LEN : 0);
 
             if (pos + totalSize <= size) {
                 lastCompleteEnd = pos + totalSize;
@@ -487,6 +514,7 @@ public class PacketAssembler {
         String packetType;
         int location;
         int dataSize;
+        int crcLen;
         int expectedTotalSize;
         String failureReason;
     }
