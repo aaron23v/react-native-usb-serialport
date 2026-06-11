@@ -7,23 +7,23 @@ package com.melihyarikkaya.rnserialport;
  * final XOR 0x0000. The 256-entry lookup table below is copied verbatim from
  * the protocol document so it matches the PG firmware byte-for-byte.
  *
- * Update step:  crc = ((crc << 8) ^ TABLE[((crc >> 8) ^ b) & 0xFF]) & 0xFFFF
+ * This mirrors the PG firmware's APPL_CRC_Fast (AMPATMSDEV3) byte-for-byte:
+ * each input byte is bit-reflected before indexing the (non-reflected) table, and
+ * the final 16-bit remainder is bit-reflected. Net effect is the reflected
+ * CRC-16/ARC, whose check value for "123456789" is 0xBB3D — matching the doc's
+ * CRC_CHECK_VALUE. selfTestPasses() asserts this.
  *
- * NOTE ON THE DOC'S CHECK VALUE:
- *   The document lists CRC_CHECK_VALUE 0xBB3D, which is the *reflected*
- *   CRC-16/ARC check. That value does NOT correspond to the lookup table the
- *   document actually supplies — this table is the non-reflected (MSB-first)
- *   0x8005 table whose natural check value for the ASCII string "123456789"
- *   is 0xFEE8 (CRC-16/UMTS aka BUYPASS). The table is authoritative because
- *   the firmware ships this exact table; selfTestPasses() asserts 0xFEE8.
- *   If a captured hardware frame ever disagrees, revisit this file first.
+ *   for each byte b:
+ *     idx       = reflect8(b) ^ (remainder >> 8)
+ *     remainder = TABLE[idx] ^ (remainder << 8)
+ *   crc = reflect16(remainder)
  */
 final class Crc16 {
 
     private Crc16() {}
 
-    // CRC of the ASCII string "123456789" using this table / algorithm.
-    static final int CHECK_VALUE = 0xFEE8;
+    // CRC of the ASCII string "123456789" (firmware CRC_CHECK_VALUE).
+    static final int CHECK_VALUE = 0xBB3D;
 
     private static final int[] TABLE = {
         0x0000, 0x8005, 0x800f, 0x000a, 0x801b, 0x001e, 0x0014, 0x8011, 0x8033, 0x0036, 0x003c, 0x8039, 0x0028, 0x802d, 0x8027, 0x0022,
@@ -44,14 +44,26 @@ final class Crc16 {
         0x0220, 0x8225, 0x822f, 0x022a, 0x823b, 0x023e, 0x0234, 0x8231, 0x8213, 0x0216, 0x021c, 0x8219, 0x0208, 0x820d, 0x8207, 0x0202,
     };
 
+    /** Reflect (mirror) the low {@code nBits} bits of {@code value} — APPL_CRC_Reflect. */
+    private static int reflect(int value, int nBits) {
+        int reflection = 0;
+        for (int bit = 0; bit < nBits; bit++) {
+            if ((value & 0x01) != 0) {
+                reflection |= (1 << ((nBits - 1) - bit));
+            }
+            value >>= 1;
+        }
+        return reflection;
+    }
+
     /** Compute the 16-bit CRC over {@code length} bytes of {@code data} starting at {@code offset}. */
     static int compute(byte[] data, int offset, int length) {
-        int crc = 0x0000;
+        int remainder = 0x0000; // CRC_INITIAL_REMAINDER
         for (int i = offset; i < offset + length; i++) {
-            int idx = ((crc >> 8) ^ (data[i] & 0xFF)) & 0xFF;
-            crc = ((crc << 8) ^ TABLE[idx]) & 0xFFFF;
+            int idx = (reflect(data[i] & 0xFF, 8) ^ (remainder >> 8)) & 0xFF;
+            remainder = (TABLE[idx] ^ (remainder << 8)) & 0xFFFF;
         }
-        return crc & 0xFFFF;
+        return reflect(remainder, 16) & 0xFFFF; // final reflect, XOR 0x0000
     }
 
     /** Compute the CRC over the whole array. */
