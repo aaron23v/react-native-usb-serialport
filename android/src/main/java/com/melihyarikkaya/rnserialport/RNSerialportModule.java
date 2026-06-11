@@ -2802,6 +2802,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     public final int rotationZ;
     public final String coilType;
     public final String coilSerialNumber;
+    // RevG additions
+    public final int resistorTemperature; // °C (Integer.MIN_VALUE if buffer too short)
+    public final int fanSpeed;            // actual fan %, 35-100 (-1 if buffer too short)
 
     public DeviceStatusData(byte[] buffer, String deviceName, java.util.concurrent.ConcurrentHashMap<String, Double> tempCache) {
       // Parse bridge and system status from buffer positions (buffer[5] = byte 0 in hardware spec)
@@ -2912,6 +2915,18 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       this.coilType = String.valueOf((char) (buffer[52] & 0xFF));
       this.coilSerialNumber = String.format("%d%d%d",
         buffer[53] & 0xFF, buffer[54] & 0xFF, buffer[55] & 0xFF);
+      // RevG: HV resistor temperature (doc byte 51 -> buffer[56], °C offset by 80)
+      if (buffer.length > 56) {
+        this.resistorTemperature = (buffer[56] & 0xFF) - 80;
+      } else {
+        this.resistorTemperature = Integer.MIN_VALUE;
+      }
+      // RevG: actual fan speed (doc byte 52 -> buffer[57], percent 35-100)
+      if (buffer.length > 57) {
+        this.fanSpeed = buffer[57] & 0xFF;
+      } else {
+        this.fanSpeed = -1;
+      }
     }
 
     /**
@@ -2939,6 +2954,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       map.putDouble("temperature2", temperature2);
       map.putDouble("temperature3", temperature3);
       map.putDouble("calculatedTemperature", calculatedTemperature);
+      // RevG additions (omit the key when the buffer was too short)
+      if (resistorTemperature != Integer.MIN_VALUE) {
+        map.putInt("resistorTemperature", resistorTemperature);
+      }
+      if (fanSpeed >= 0) {
+        map.putInt("fanSpeed", fanSpeed);
+      }
 
       // Motion and positioning
       map.putInt("gyroX", gyroX);
