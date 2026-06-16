@@ -46,7 +46,7 @@ public class PacketAssembler {
     private static final int DEVICE_STATUS_SIZE = 65;
     private static final int MAX_VALID_LOCATION = 180000; // Upper bound for sanity check
 
-    // CRC-16 trailer length (protocol RevG, from PG firmware >= V0.18). When enabled,
+    // CRC-16 trailer length (protocol RevG, from PG firmware >= V0.16). When enabled,
     // every read response and write ACK carries 2 extra trailing CRC bytes that must be
     // accounted for in framing, or the stream desyncs. Toggled by setCrcEnabled().
     private static final int CRC_LEN = 2;

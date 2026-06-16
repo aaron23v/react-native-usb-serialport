@@ -1140,6 +1140,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // Forget CRC enablement + cached firmware identity so a reconnected (or different) PG
     // re-evaluates its firmware version before CRC is applied again.
     crcEnabledByDevice.remove(deviceName);
+    callerByCommandKey.clear();
     packetIntegrityValidator.reset();
 
     // Give libusb time to finish processing any pending events
@@ -2120,8 +2121,19 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     boolean enabled = fwSupportsCrc(major, minor);
     crcEnabledByDevice.put(deviceName, enabled);
     buffer.setCrcEnabled(enabled);
-    android.util.Log.i(TAG, "CRC " + (enabled ? "ENABLED" : "disabled (legacy PG)") +
-        " for " + deviceName + " — PG firmware V" + major + "." + minor);
+    if (enabled) {
+      // Runtime proof the CRC algorithm produces the documented check value on this build.
+      boolean selfTest = Crc16.selfTestPasses();
+      if (!selfTest) {
+        android.util.Log.e(TAG, "CRC SELF-TEST FAILED — algorithm is broken on this build; " +
+            "every frame will fail validation!");
+      }
+      android.util.Log.i(TAG, "CRC ENABLED for " + deviceName + " — PG firmware V" + major + "." +
+          minor + " (self-test " + (selfTest ? "OK" : "FAILED") + ")");
+    } else {
+      android.util.Log.i(TAG, "CRC disabled (legacy PG) for " + deviceName +
+          " — PG firmware V" + major + "." + minor);
+    }
   }
 
   /**
@@ -2201,7 +2213,14 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
       // CRC validation (protocol RevG, firmware >= V0.18). When enabled, every read
       // response and write ACK carries a 2-byte CRC trailer over all preceding bytes.
-      if (isCrcEnabled(deviceName) && packet.length >= 5 + CRC_TRAILER_LEN) {
+      if (isCrcEnabled(deviceName)) {
+        // CRC is enabled but the packet is too short to even contain the trailer — it
+        // cannot be validated, so drop it rather than pass it through unchecked.
+        if (packet.length < 5 + CRC_TRAILER_LEN) {
+          android.util.Log.e(TAG, "CRC-enabled packet too short to contain trailer (" +
+                            packet.length + " bytes) — dropping");
+          return;
+        }
         int n = packet.length;
         int crcCalc = Crc16.compute(packet, 0, n - CRC_TRAILER_LEN);
         int crcRecv = ((packet[n - CRC_TRAILER_LEN] & 0xFF) << 8) | (packet[n - 1] & 0xFF);
