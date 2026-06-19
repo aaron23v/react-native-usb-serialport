@@ -2169,9 +2169,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     try {
       // Note: Heartbeat responses are handled by processStatusPacket, not here
 
-      // Validate packet size for device status
-      if (packet.length < 56) {
-        android.util.Log.w(TAG, "Device status packet too short: " + packet.length + " bytes");
+      // Validate packet size for device status. A complete RevG status packet is 58 bytes
+      // (5-byte header + 53 data) — needed for resistor temp (doc 51) + fan speed (doc 52).
+      if (packet.length < 58) {
+        android.util.Log.w(TAG, "Device status packet too short: " + packet.length + " bytes (need 58)");
         return;
       }
 
