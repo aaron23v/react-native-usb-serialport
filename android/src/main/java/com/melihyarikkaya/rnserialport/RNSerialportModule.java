@@ -172,7 +172,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // Heartbeat Management
     private volatile String heartbeatDevice = null;
     private volatile ScheduledFuture<?> heartbeatTimer = null;
-    private static final byte[] HEARTBEAT_COMMAND = {0x66, 0x00, 0x00, 0x00, 0x33}; // Full status read (51 bytes)
+    private static final byte[] HEARTBEAT_COMMAND = {0x66, 0x00, 0x00, 0x00, 0x35}; // Status read, request 53 bytes (was 51) to cover RevG resistor temp (doc 51) + fan speed (doc 52). Assumes firmware honors the requested count — verify on hardware via the [RX] hex log that the response is 58 bytes.
     // Removed LIGHTWEIGHT_HEARTBEAT_COMMAND - no longer needed with priority queue approach
 
     // Retry Management
@@ -187,7 +187,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     private final TimestampValidator timestampValidator = new TimestampValidator();
 
     // Special Command Signatures
-    private static final byte[] READ_COMMAND_SIG = {102, 0, 0, 0, 51};
+    private static final byte[] READ_COMMAND_SIG = {102, 0, 0, 0, 53};
     private static final byte[] RESET_COMMAND_SIG = {(byte)170, 0, 8, 55, 15, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192};
     private static final byte[] PG_DISABLE_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x36, 0x01, 0x00}; // Disable PG at location 2102
     private static final byte[] CAMERA_ON_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x35, 0x01, 0x00};  // Location 2101 (0x0835), value 0 = Camera ON
