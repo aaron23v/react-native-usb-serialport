@@ -250,8 +250,9 @@ public class PacketAssembler {
             result.packetType = "OTHER_READ";
         }
 
-        // CRC trailer (when enabled) adds 2 bytes after the data payload.
-        int crcLen = crcEnabled ? CRC_LEN : 0;
+        // CRC trailer (when enabled) adds 2 bytes after the data payload — but ONLY on
+        // read responses (0x66). Write ACKs (0xAA) carry no CRC per the AMPA tester.
+        int crcLen = (crcEnabled && header == HEADER_READ) ? CRC_LEN : 0;
         int totalSize = HEADER_SIZE + expectedDataSize + crcLen;
         result.expectedTotalSize = totalSize;
         result.location = location;
@@ -419,7 +420,9 @@ public class PacketAssembler {
                 dataSize = 0;
             }
 
-            int totalSize = HEADER_SIZE + dataSize + (crcEnabled ? CRC_LEN : 0);
+            // CRC trailer only on read responses (0x66), never on write ACKs (0xAA).
+            int totalSize = HEADER_SIZE + dataSize +
+                ((crcEnabled && header == HEADER_READ) ? CRC_LEN : 0);
 
             if (pos + totalSize <= size) {
                 lastCompleteEnd = pos + totalSize;
