@@ -172,7 +172,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // Heartbeat Management
     private volatile String heartbeatDevice = null;
     private volatile ScheduledFuture<?> heartbeatTimer = null;
-    private static final byte[] HEARTBEAT_COMMAND = {0x66, 0x00, 0x00, 0x00, 0x33}; // Full status read (51 bytes)
+    private static final byte[] HEARTBEAT_COMMAND = {0x66, 0x00, 0x00, 0x00, 0x35}; // Status read, request 53 bytes (was 51) to cover RevG resistor temp (doc 51) + fan speed (doc 52). Assumes firmware honors the requested count — verify on hardware via the [RX] hex log that the response is 58 bytes.
     // Removed LIGHTWEIGHT_HEARTBEAT_COMMAND - no longer needed with priority queue approach
 
     // Retry Management
@@ -205,7 +205,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     private final Map<String, Boolean> crcEnabledByDevice = new ConcurrentHashMap<>();
 
     // Special Command Signatures
-    private static final byte[] READ_COMMAND_SIG = {102, 0, 0, 0, 51};
+    private static final byte[] READ_COMMAND_SIG = {102, 0, 0, 0, 53};
     private static final byte[] RESET_COMMAND_SIG = {(byte)170, 0, 8, 55, 15, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192};
     private static final byte[] PG_DISABLE_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x36, 0x01, 0x00}; // Disable PG at location 2102
     private static final byte[] CAMERA_ON_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x35, 0x01, 0x00};  // Location 2101 (0x0835), value 0 = Camera ON
@@ -2278,9 +2278,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     try {
       // Note: Heartbeat responses are handled by processStatusPacket, not here
 
-      // Validate packet size for device status
-      if (packet.length < 56) {
-        android.util.Log.w(TAG, "Device status packet too short: " + packet.length + " bytes");
+      // Validate packet size for device status. A complete RevG status packet is 58 bytes
+      // (5-byte header + 53 data) — needed for resistor temp (doc 51) + fan speed (doc 52).
+      if (packet.length < 58) {
+        android.util.Log.w(TAG, "Device status packet too short: " + packet.length + " bytes (need 58)");
         return;
       }
 
@@ -2911,6 +2912,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     public final int rotationZ;
     public final String coilType;
     public final String coilSerialNumber;
+    // RevG additions
+    public final int resistorTemperature; // °C (Integer.MIN_VALUE if buffer too short)
+    public final int fanSpeed;            // actual fan %, 35-100 (-1 if buffer too short)
 
     public DeviceStatusData(byte[] buffer, String deviceName, java.util.concurrent.ConcurrentHashMap<String, Double> tempCache) {
       // Parse bridge and system status from buffer positions (buffer[5] = byte 0 in hardware spec)
@@ -3021,6 +3025,18 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       this.coilType = String.valueOf((char) (buffer[52] & 0xFF));
       this.coilSerialNumber = String.format("%d%d%d",
         buffer[53] & 0xFF, buffer[54] & 0xFF, buffer[55] & 0xFF);
+      // RevG: HV resistor temperature (doc byte 51 -> buffer[56], °C offset by 80)
+      if (buffer.length > 56) {
+        this.resistorTemperature = (buffer[56] & 0xFF) - 80;
+      } else {
+        this.resistorTemperature = Integer.MIN_VALUE;
+      }
+      // RevG: actual fan speed (doc byte 52 -> buffer[57], percent 35-100)
+      if (buffer.length > 57) {
+        this.fanSpeed = buffer[57] & 0xFF;
+      } else {
+        this.fanSpeed = -1;
+      }
     }
 
     /**
@@ -3048,6 +3064,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       map.putDouble("temperature2", temperature2);
       map.putDouble("temperature3", temperature3);
       map.putDouble("calculatedTemperature", calculatedTemperature);
+      // RevG additions (omit the key when the buffer was too short)
+      if (resistorTemperature != Integer.MIN_VALUE) {
+        map.putInt("resistorTemperature", resistorTemperature);
+      }
+      if (fanSpeed >= 0) {
+        map.putInt("fanSpeed", fanSpeed);
+      }
 
       // Motion and positioning
       map.putInt("gyroX", gyroX);
