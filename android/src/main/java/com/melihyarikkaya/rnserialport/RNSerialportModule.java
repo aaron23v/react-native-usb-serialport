@@ -1132,12 +1132,14 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     serialPorts.remove(deviceName);
     android.util.Log.d(TAG, "🛑 stopConnection: Removed serial port from active map");
 
-    // Clear any partial bytes left in the assembler so a future reconnect
-    // (potentially with the same deviceName) does not see stale data and desync.
-    NativePacketBuffer staleBuffer = devicePacketBuffers.get(deviceName);
-    if (staleBuffer != null) {
-      staleBuffer.clear();
-      android.util.Log.i(TAG, "🛑 stopConnection: Cleared packet buffer for: " + deviceName);
+    // Remove the per-device packet buffer entirely: the device is disconnecting, so its
+    // buffer reaches true end-of-life here and is reclaimed. A future reconnect (even with the
+    // same deviceName) mints a fresh buffer via computeIfAbsent, so no stale data can desync it.
+    // (Log-collection completion only clear()s the buffer, because the device stays connected
+    // there and its CRC framing must be preserved.)
+    NativePacketBuffer removedBuffer = devicePacketBuffers.remove(deviceName);
+    if (removedBuffer != null) {
+      android.util.Log.i(TAG, "🛑 stopConnection: Removed packet buffer for: " + deviceName);
     }
 
     // Forget CRC enablement + cached firmware identity so a reconnected (or different) PG
@@ -2105,32 +2107,48 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   }
 
   /**
-   * Decide CRC enablement for a device once the PG firmware version is known, and push
-   * the decision to the device's packet assembler. Called at the start of each RX batch
-   * (before extraction) so framing and validation never disagree mid-batch. No-op once
-   * decided; cleared on disconnect so a reconnected/different PG re-evaluates.
+   * Keep a device's packet assembler framing in sync with the CRC decision for its PG
+   * firmware. Called at the start of each RX batch (before extraction) so framing and
+   * validation never disagree mid-batch.
+   *
+   * The decision itself (does this firmware speak CRC?) is made once per connection and
+   * cached in crcEnabledByDevice; the self-test and log line fire only on that first
+   * decision. But the decision must be re-applied to the assembler on EVERY batch, because
+   * the per-device buffer can be destroyed and recreated mid-connection (e.g. the buffer is
+   * removed when a log-collection completes) and a fresh assembler defaults to CRC-off. If
+   * we only pushed the flag on the first decision, a recreated buffer would frame 58-byte
+   * status packets while V0.16+ firmware keeps sending 60-byte (58 + 2 CRC) frames — a
+   * permanent 2-byte desync that fails every CRC and drops all status until a reconnect.
+   * setCrcEnabled() logs only on an actual change, so re-applying every batch is silent in
+   * steady state. crcEnabledByDevice is cleared on disconnect so a reconnected/different PG
+   * re-evaluates.
    */
   private void updateCrcEnablement(String deviceName, NativePacketBuffer buffer) {
-    if (crcEnabledByDevice.containsKey(deviceName)) return;   // already decided
-    if (!packetIntegrityValidator.isFwKnown()) return;        // need a clean status packet first
-    int major = packetIntegrityValidator.getCachedFwMajor();
-    int minor = packetIntegrityValidator.getCachedFwMinor();
-    boolean enabled = fwSupportsCrc(major, minor);
-    crcEnabledByDevice.put(deviceName, enabled);
-    buffer.setCrcEnabled(enabled);
-    if (enabled) {
-      // Runtime proof the CRC algorithm produces the documented check value on this build.
-      boolean selfTest = Crc16.selfTestPasses();
-      if (!selfTest) {
-        android.util.Log.e(TAG, "CRC SELF-TEST FAILED — algorithm is broken on this build; " +
-            "every frame will fail validation!");
+    Boolean enabled = crcEnabledByDevice.get(deviceName);
+    if (enabled == null) {
+      // First batch for this connection: decide from the cached firmware version.
+      if (!packetIntegrityValidator.isFwKnown()) return;      // need a clean status packet first
+      int major = packetIntegrityValidator.getCachedFwMajor();
+      int minor = packetIntegrityValidator.getCachedFwMinor();
+      enabled = fwSupportsCrc(major, minor);
+      crcEnabledByDevice.put(deviceName, enabled);
+      if (enabled) {
+        // Runtime proof the CRC algorithm produces the documented check value on this build.
+        boolean selfTest = Crc16.selfTestPasses();
+        if (!selfTest) {
+          android.util.Log.e(TAG, "CRC SELF-TEST FAILED — algorithm is broken on this build; " +
+              "every frame will fail validation!");
+        }
+        android.util.Log.i(TAG, "CRC ENABLED for " + deviceName + " — PG firmware V" + major + "." +
+            minor + " (self-test " + (selfTest ? "OK" : "FAILED") + ")");
+      } else {
+        android.util.Log.i(TAG, "CRC disabled (legacy PG) for " + deviceName +
+            " — PG firmware V" + major + "." + minor);
       }
-      android.util.Log.i(TAG, "CRC ENABLED for " + deviceName + " — PG firmware V" + major + "." +
-          minor + " (self-test " + (selfTest ? "OK" : "FAILED") + ")");
-    } else {
-      android.util.Log.i(TAG, "CRC disabled (legacy PG) for " + deviceName +
-          " — PG firmware V" + major + "." + minor);
     }
+    // Every batch: re-derive the live buffer's framing from the authoritative decision so a
+    // recreated/reset buffer cannot silently drift out of sync with the firmware.
+    buffer.setCrcEnabled(enabled);
   }
 
   private void processNativePackets(String deviceName, byte[] rawBytes) {
@@ -3580,11 +3598,16 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       deviceSuppressNextLogCollection.remove(deviceName);
       android.util.Log.d(TAG, "🧹 Reset treatment status tracking for next sequence");
 
-      // FIX #9: Clean up per-device packet buffer to prevent memory leaks
-      // Always remove buffer on cleanup (unlike pulse tracking which may be preserved for reconnect)
-      NativePacketBuffer removedBuffer = devicePacketBuffers.remove(deviceName);
-      if (removedBuffer != null) {
-        android.util.Log.d(TAG, "🧹 Cleaned up packet buffer for device: " + deviceName);
+      // Flush the per-device packet buffer, but do NOT remove it: this cleanup runs while the
+      // device is still connected (e.g. log-collection completed), and removing the buffer would
+      // drop its CRC framing flag. The next batch would recreate a fresh buffer defaulting to
+      // CRC-off while V0.16+ firmware keeps sending CRC-trailered frames — a permanent framing
+      // desync. clear() empties buffered bytes while preserving crcEnabled (same as the disconnect
+      // path in stopConnection). The buffer is fully removed only on real disconnect.
+      NativePacketBuffer buffer = devicePacketBuffers.get(deviceName);
+      if (buffer != null) {
+        buffer.clear();
+        android.util.Log.d(TAG, "🧹 Cleared packet buffer for device: " + deviceName);
       }
 
       // Cancel any pending timeout handlers
