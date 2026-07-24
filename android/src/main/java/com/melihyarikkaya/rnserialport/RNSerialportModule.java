@@ -196,9 +196,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     //   - incoming read response (0x66): CRC validated     (processPacketDirectly)
     //   - incoming write ACK     (0xAA): NO CRC            (plain 5-byte ack)
     //
-    // EDITABLE THRESHOLD: CRC is active from PG firmware V0.16 onward (V16 and above).
+    // EDITABLE THRESHOLD: CRC is active from PG firmware V0.20 onward (V20 and above).
     private static final int CRC_MIN_FW_MAJOR = 0;
-    private static final int CRC_MIN_FW_MINOR = 16;
+    private static final int CRC_MIN_FW_MINOR = 20;
     // Length of the CRC-16 trailer appended to commands/responses when CRC is enabled.
     private static final int CRC_TRAILER_LEN = 2;
     // Per-device CRC enablement: null = undecided (fw not yet known), TRUE/FALSE once decided.
