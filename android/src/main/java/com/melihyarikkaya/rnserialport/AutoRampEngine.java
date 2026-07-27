@@ -27,6 +27,10 @@ public class AutoRampEngine {
     // Write command: address 2097 (Required Voltage Percentage), 2 bytes
     private static final int REQUIRED_VOLTAGE_ADDRESS = 2097;
 
+    // Manual-override detection
+    private static final int OVERRIDE_TOLERANCE = 10; // % * 10 => 1.0% deviation
+    private static final int SETTLING_HEARTBEATS = 3; // suppress detection after our own write
+
     // Per-device state
     private final ConcurrentHashMap<String, DeviceRampState> deviceStates = new ConcurrentHashMap<>();
 
@@ -70,14 +74,19 @@ public class AutoRampEngine {
         int currentSequenceIndex = 0;
         int nextKeyframeIndex = 0;
         int trackedAmplitude = -1; // current amplitude in % * 10 (e.g. 500 = 50.0%)
+        int targetMaxTimesTen = 1000; // amplitude ceiling in % * 10; default 100.0%
+        int settlingCounter = 0; // heartbeats to wait for hardware to reflect our write
         int lastTreatmentStatus = -1;
         boolean active = false;
+        boolean overridden = false; // a manual adjustment disabled ramp for the session
 
         void reset() {
             currentSequenceIndex = 0;
             nextKeyframeIndex = 0;
             trackedAmplitude = -1;
+            settlingCounter = 0;
             active = false;
+            overridden = false;
         }
     }
 
@@ -88,8 +97,13 @@ public class AutoRampEngine {
      * Expects ReadableArray of objects:
      * [{ sequenceIndex, sequenceId, timeline: [{ relativeTimestamp, amplitudeDelta, pulseNumber, trainNumber }] }]
      */
-    public void loadTimeline(String deviceName, ReadableArray timelineData) {
+    public void loadTimeline(String deviceName, ReadableArray timelineData, double targetMaxPercent) {
         DeviceRampState state = new DeviceRampState();
+
+        // Clamp the ceiling to a valid 0-100% and store as % * 10. A non-positive
+        // value means "no app limit provided" -> fall back to full 100.0%.
+        int maxTimesTen = (int) Math.round(targetMaxPercent * 10);
+        state.targetMaxTimesTen = (maxTimesTen > 0) ? Math.min(maxTimesTen, 1000) : 1000;
 
         for (int i = 0; i < timelineData.size(); i++) {
             ReadableMap seqMap = timelineData.getMap(i);
@@ -123,10 +137,10 @@ public class AutoRampEngine {
      * @param treatmentStatus  0=stopped, 1=running, 2=paused
      * @param currentMso       Current actual amplitude from hardware (already divided by 10, in %)
      */
-    public void checkAndApply(String deviceName, long hardwareTimestamp, int treatmentStatus, int currentMso) {
+    public boolean checkAndApply(String deviceName, long hardwareTimestamp, int treatmentStatus, int currentMso) {
         DeviceRampState state = deviceStates.get(deviceName);
         if (state == null || state.timelines.isEmpty()) {
-            return;
+            return false;
         }
 
         // Handle treatment status transitions
@@ -137,18 +151,32 @@ public class AutoRampEngine {
 
         // Only process keyframes while treatment is running
         if (treatmentStatus != 1 || !state.active) {
-            return;
+            return false;
+        }
+
+        // Manual-override detection: while stable (no recent engine write), any
+        // divergence between the hardware amplitude and what we last wrote means a
+        // human moved it (coil knob, or a tablet write we did not originate).
+        if (state.settlingCounter > 0) {
+            state.settlingCounter--;
+        } else if (state.trackedAmplitude >= 0
+                && Math.abs(currentMso * 10 - state.trackedAmplitude) > OVERRIDE_TOLERANCE) {
+            Log.i(TAG, "Manual override detected: hw=" + currentMso + "% vs tracked="
+                    + (state.trackedAmplitude / 10.0) + "% — disabling auto-ramp");
+            state.active = false;
+            state.overridden = true; // stays disabled for the rest of the session
+            return true;
         }
 
         // Get current sequence timeline
         if (state.currentSequenceIndex >= state.timelines.size()) {
-            return;
+            return false;
         }
         SequenceTimeline currentTimeline = state.timelines.get(state.currentSequenceIndex);
         List<RampKeyframe> keyframes = currentTimeline.keyframes;
 
         if (state.nextKeyframeIndex >= keyframes.size()) {
-            return; // All keyframes consumed for this sequence
+            return false; // All keyframes consumed for this sequence
         }
 
         // Check if hardware timestamp has passed the next keyframe
@@ -163,8 +191,8 @@ public class AutoRampEngine {
 
                 state.trackedAmplitude += kf.amplitudeDelta * 10; // delta is in %, tracked is in % * 10
 
-                // Clamp to valid range 0-1000 (0% - 100.0%)
-                state.trackedAmplitude = Math.max(0, Math.min(1000, state.trackedAmplitude));
+                // Clamp: never below 0, never above the app's amplitude limit
+                state.trackedAmplitude = Math.max(0, Math.min(state.targetMaxTimesTen, state.trackedAmplitude));
 
                 Log.i(TAG, "Keyframe " + state.nextKeyframeIndex + " applied: delta=" + kf.amplitudeDelta +
                         "%, new amplitude=" + (state.trackedAmplitude / 10.0) + "%" +
@@ -173,9 +201,13 @@ public class AutoRampEngine {
                 state.nextKeyframeIndex++;
             }
 
-            // Write the new amplitude to hardware
+            // Write the new amplitude to hardware, then suppress override detection
+            // for a few heartbeats while the hardware catches up to our write.
             writeRequiredVoltage(deviceName, state.trackedAmplitude);
+            state.settlingCounter = SETTLING_HEARTBEATS;
         }
+
+        return false;
     }
 
     /**
@@ -226,7 +258,11 @@ public class AutoRampEngine {
                 state.trackedAmplitude = currentMso * 10; // Initialize from hardware's actual amplitude
                 Log.i(TAG, "Auto-ramp started. Initial amplitude: " + currentMso + "%");
             }
-            state.active = true;
+            // A manual override disables ramp for the session; pause/resume must
+            // not revive it. Only (re)activate when not overridden.
+            if (!state.overridden) {
+                state.active = true;
+            }
         } else if (newStatus == 2) {
             // Paused — hold position, don't reset
             Log.i(TAG, "Auto-ramp paused");

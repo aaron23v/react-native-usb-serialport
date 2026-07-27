@@ -2361,8 +2361,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       statusParams.putMap("data", dataMap);
       eventEmit("onNativeDeviceStatus", statusParams);
 
-      // Auto-ramp: check timeline keyframes against hardware timestamp
-      autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso);
+      // Auto-ramp: check timeline keyframes; emit if a manual override was detected
+      boolean autoRampOverride = autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso);
+      if (autoRampOverride) {
+        WritableMap overrideParams = Arguments.createMap();
+        overrideParams.putString("deviceName", deviceName);
+        eventEmit("onAutoRampManualOverride", overrideParams);
+      }
 
       // Emit power status event
       WritableMap powerParams = Arguments.createMap();
@@ -3442,8 +3447,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       statusParams.putMap("data", dataMap);
       eventEmit("onNativeDeviceStatus", statusParams);
 
-      // Auto-ramp: check timeline keyframes against hardware timestamp
-      autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso);
+      // Auto-ramp: check timeline keyframes; emit if a manual override was detected
+      boolean autoRampOverride = autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso);
+      if (autoRampOverride) {
+        WritableMap overrideParams = Arguments.createMap();
+        overrideParams.putString("deviceName", deviceName);
+        eventEmit("onAutoRampManualOverride", overrideParams);
+      }
 
       // Extract and emit power status if changed
       WritableMap powerParams = Arguments.createMap();
@@ -4411,10 +4421,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   }
 
     @ReactMethod
-    public void loadAutoRampTimeline(ReadableArray timelineData, Promise promise) {
+    public void loadAutoRampTimeline(ReadableArray timelineData, double targetMaxPercent, Promise promise) {
         if (heartbeatDevice == null) { promise.resolve(false); return; }
         try {
-            autoRampEngine.loadTimeline(heartbeatDevice, timelineData);
+            autoRampEngine.loadTimeline(heartbeatDevice, timelineData, targetMaxPercent);
             promise.resolve(true);
         } catch (Exception e) {
             android.util.Log.e(TAG, "Failed to load auto-ramp timeline: " + e.getMessage(), e);
