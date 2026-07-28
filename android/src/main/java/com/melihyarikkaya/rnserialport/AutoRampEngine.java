@@ -76,6 +76,7 @@ public class AutoRampEngine {
         int trackedAmplitude = -1; // current amplitude in % * 10 (e.g. 500 = 50.0%)
         int targetMaxTimesTen = 1000; // amplitude ceiling in % * 10; default 100.0%
         int settlingCounter = 0; // heartbeats to wait for hardware to reflect our write
+        int lastObservedMso = -1; // last hardware amplitude reading (%), to detect real movement
         int lastTreatmentStatus = -1;
         boolean active = false;
         boolean overridden = false; // a manual adjustment disabled ramp for the session
@@ -85,6 +86,7 @@ public class AutoRampEngine {
             nextKeyframeIndex = 0;
             trackedAmplitude = -1;
             settlingCounter = 0;
+            lastObservedMso = -1;
             active = false;
             overridden = false;
         }
@@ -154,19 +156,23 @@ public class AutoRampEngine {
             return false;
         }
 
-        // Manual-override detection: while stable (no recent engine write), any
-        // divergence between the hardware amplitude and what we last wrote means a
-        // human moved it (coil knob, or a tablet write we did not originate).
+        // Manual-override detection: flag only when the hardware amplitude actually
+        // MOVES between heartbeats without the engine having just written it (a real
+        // knob turn). A persistent offset — e.g. the hardware lagging or never
+        // reaching a 0% write — is NOT an override, so it no longer false-triggers.
         if (state.settlingCounter > 0) {
+            // Our own write is still propagating; absorb whatever the hardware reads.
             state.settlingCounter--;
-        } else if (state.trackedAmplitude >= 0
-                && Math.abs(currentMso * 10 - state.trackedAmplitude) > OVERRIDE_TOLERANCE) {
-            Log.i(TAG, "Manual override detected: hw=" + currentMso + "% vs tracked="
-                    + (state.trackedAmplitude / 10.0) + "% — disabling auto-ramp");
+        } else if (state.lastObservedMso >= 0
+                && Math.abs(currentMso - state.lastObservedMso) * 10 > OVERRIDE_TOLERANCE) {
+            Log.i(TAG, "Manual override detected: hw moved " + state.lastObservedMso
+                    + "% -> " + currentMso + "% — disabling auto-ramp");
             state.active = false;
             state.overridden = true; // stays disabled for the rest of the session
+            state.lastObservedMso = currentMso;
             return true;
         }
+        state.lastObservedMso = currentMso;
 
         // Get current sequence timeline
         if (state.currentSequenceIndex >= state.timelines.size()) {
@@ -256,6 +262,7 @@ public class AutoRampEngine {
                 // Fresh start (not resume from pause)
                 state.nextKeyframeIndex = 0;
                 state.trackedAmplitude = currentMso * 10; // Initialize from hardware's actual amplitude
+                state.lastObservedMso = currentMso; // baseline for movement detection
                 Log.i(TAG, "Auto-ramp started. Initial amplitude: " + currentMso + "%");
             }
             // A manual override disables ramp for the session; pause/resume must
