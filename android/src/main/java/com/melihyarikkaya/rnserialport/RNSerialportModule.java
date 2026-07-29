@@ -204,12 +204,20 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // Per-device CRC enablement: null = undecided (fw not yet known), TRUE/FALSE once decided.
     private final Map<String, Boolean> crcEnabledByDevice = new ConcurrentHashMap<>();
 
+    // Train skip-direction (protocol RevG, location 2118) skip-backward was unreliable on
+    // older PG firmware; the Tablet app kept the "Train back" button force-disabled until now.
+    // EDITABLE THRESHOLD: Train back is supported from PG firmware V0.20 onward (V20 and above).
+    private static final int TRAIN_BACK_MIN_FW_MAJOR = 0;
+    private static final int TRAIN_BACK_MIN_FW_MINOR = 20;
+
     // Special Command Signatures
     private static final byte[] READ_COMMAND_SIG = {102, 0, 0, 0, 53};
     private static final byte[] RESET_COMMAND_SIG = {(byte)170, 0, 8, 55, 15, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192, 23, 112, 9, 39, (byte)192};
     private static final byte[] PG_DISABLE_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x36, 0x01, 0x00}; // Disable PG at location 2102
     private static final byte[] CAMERA_ON_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x35, 0x01, 0x00};  // Location 2101 (0x0835), value 0 = Camera ON
     private static final byte[] CAMERA_OFF_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x35, 0x01, 0x01}; // Location 2101 (0x0835), value 1 = Camera OFF
+    private static final byte[] TRAIN_BACK_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x46, 0x03, 0x02, 0x00, 0x01};    // Location 2118 (0x0846): skip direction=backward, 1 train
+    private static final byte[] TRAIN_FORWARD_COMMAND = {(byte)0xAA, 0x00, 0x08, 0x46, 0x03, 0x01, 0x00, 0x01}; // Location 2118 (0x0846): skip direction=forward, 1 train
 
     // Control mode: null = not on control screen, "TREATMENT"/"MANUAL"/"MAPPING"/"CALIBRATE" = on control screen
     private volatile String controlMode = null;
@@ -1810,6 +1818,34 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     addToQueueFrontReplace(command, functionCaller);
   }
 
+  /** True when the connected PG firmware (major.minor) is at or beyond the train-back cut-in version. */
+  private boolean isTrainBackSupported() {
+    if (!packetIntegrityValidator.isFwKnown()) return false;
+    int major = packetIntegrityValidator.getCachedFwMajor();
+    int minor = packetIntegrityValidator.getCachedFwMinor();
+    if (major != TRAIN_BACK_MIN_FW_MAJOR) return major > TRAIN_BACK_MIN_FW_MAJOR;
+    return minor >= TRAIN_BACK_MIN_FW_MINOR;
+  }
+
+  // Skip backward one train (protocol location 2118). No-ops on firmware below the
+  // train-back cut-in version — the JS layer also gates the button via the
+  // "trainBackSupported" field on the device status stream, this is defense in depth.
+  @ReactMethod
+  public void trainBack() {
+    if (!isTrainBackSupported()) {
+      android.util.Log.w(TAG, "trainBack() ignored - unsupported on current PG firmware");
+      return;
+    }
+    addToNativeQueue(heartbeatDevice, TRAIN_BACK_COMMAND, PRIORITY_FRONT, "train back", 0);
+  }
+
+  // Skip forward one train (protocol location 2118). Unlike trainBack(), this has always
+  // worked and is not firmware-gated.
+  @ReactMethod
+  public void trainForward() {
+    addToNativeQueue(heartbeatDevice, TRAIN_FORWARD_COMMAND, PRIORITY_FRONT, "train forward", 0);
+  }
+
   @ReactMethod
   public void writeReadCommand(ReadableArray command, String functionCaller) {
     int readCommandCount = 0;
@@ -2938,6 +2974,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // RevG additions
     public final int resistorTemperature; // °C (Integer.MIN_VALUE if buffer too short)
     public final int fanSpeed;            // actual fan %, 35-100 (-1 if buffer too short)
+    public final int firmwareMajor;       // doc byte 4 -> buffer[9]
+    public final int firmwareMinor;       // doc byte 5 -> buffer[10]
+    public final boolean trainBackSupported; // fw at/beyond TRAIN_BACK_MIN_FW_MAJOR.MINOR
 
     public DeviceStatusData(byte[] buffer, String deviceName, java.util.concurrent.ConcurrentHashMap<String, Double> tempCache) {
       // Parse bridge and system status from buffer positions (buffer[5] = byte 0 in hardware spec)
@@ -2971,6 +3010,12 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       this.accX = 0;
       this.accY = 0;
       this.accZ = 0;
+
+      // Firmware revision (doc bytes 4[major], 5[minor] -> buffer[9], buffer[10])
+      this.firmwareMajor = buffer[9] & 0xFF;
+      this.firmwareMinor = buffer[10] & 0xFF;
+      this.trainBackSupported = (firmwareMajor > TRAIN_BACK_MIN_FW_MAJOR) ||
+          (firmwareMajor == TRAIN_BACK_MIN_FW_MAJOR && firmwareMinor >= TRAIN_BACK_MIN_FW_MINOR);
 
       // Parse status flags and configuration
       this.currentMso = buffer[32] & 0xFF;
@@ -3094,6 +3139,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       if (fanSpeed >= 0) {
         map.putInt("fanSpeed", fanSpeed);
       }
+      map.putBoolean("trainBackSupported", trainBackSupported);
 
       // Motion and positioning
       map.putInt("gyroX", gyroX);

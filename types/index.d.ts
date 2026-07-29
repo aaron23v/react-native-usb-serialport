@@ -298,6 +298,21 @@ interface RNSerialportStatic {
   writeReadCommand(command: number[], functionCaller: string): void;
 
   /**
+   * Skip backward one train (protocol location 2118). No-ops natively on PG firmware
+   * below the train-back cut-in version (see "trainBackSupported" on device status).
+   *
+   * @memberof RNSerialportStatic
+   */
+  trainBack(): void;
+
+  /**
+   * Skip forward one train (protocol location 2118). Not firmware-gated.
+   *
+   * @memberof RNSerialportStatic
+   */
+  trainForward(): void;
+
+  /**
    * Clear all commands from the queue
    *
    * @memberof RNSerialportStatic
