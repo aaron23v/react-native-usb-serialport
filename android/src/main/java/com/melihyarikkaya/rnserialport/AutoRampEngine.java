@@ -233,6 +233,9 @@ public class AutoRampEngine {
 
         state.currentSequenceIndex++;
         state.nextKeyframeIndex = 0;
+        // Each sequence's on/off is independent: clear any override from the previous
+        // sequence so this one re-activates on its status transition.
+        state.overridden = false;
 
         if (state.currentSequenceIndex < state.timelines.size()) {
             Log.i(TAG, "Advanced to sequence " + state.currentSequenceIndex +
