@@ -138,10 +138,11 @@ public class AutoRampEngine {
      * @param hardwareTimestamp Treatment progress time in ms from hardware (bytes 37-40)
      * @param treatmentStatus  0=stopped, 1=running, 2=paused
      * @param currentMso       Current actual amplitude from hardware (already divided by 10, in %)
-     * @param currentPulseIndex Live cumulative pulse index within the sequence (bytes 22-23);
-     *                          keyframes are scheduled against this, not elapsed time.
+     * @param currentPulseIndex Live cumulative pulse index within the sequence (bytes 22-23).
+     * @param currentTrainCount Trains executed so far in the sequence (bytes 20-21); keyframes
+     *                          are scheduled by train and applied in the ITI before their train.
      */
-    public boolean checkAndApply(String deviceName, long hardwareTimestamp, int treatmentStatus, int currentMso, int currentPulseIndex) {
+    public boolean checkAndApply(String deviceName, long hardwareTimestamp, int treatmentStatus, int currentMso, int currentPulseIndex, int currentTrainCount) {
         DeviceRampState state = deviceStates.get(deviceName);
         if (state == null || state.timelines.isEmpty()) {
             return false;
@@ -187,33 +188,35 @@ public class AutoRampEngine {
             return false; // All keyframes consumed for this sequence
         }
 
-        // Apply keyframes by PULSE position, not elapsed time: replay each amplitude
-        // change when the hardware reaches the pulse it was recorded at. This keeps the
-        // ramp aligned to the same train/pulse across sessions even when their timing
-        // differs (time-based scheduling drifted by a train).
-        RampKeyframe nextKf = keyframes.get(state.nextKeyframeIndex);
-        if (currentPulseIndex >= nextKf.pulseNumber) {
-            // Apply all keyframes whose pulse has been reached (in case we skipped some)
-            while (state.nextKeyframeIndex < keyframes.size()) {
-                RampKeyframe kf = keyframes.get(state.nextKeyframeIndex);
-                if (currentPulseIndex < kf.pulseNumber) {
-                    break;
-                }
-
-                state.trackedAmplitude += kf.amplitudeDelta * 10; // delta is in %, tracked is in % * 10
-
-                // Clamp: never below 0, never above the app's amplitude limit
-                state.trackedAmplitude = Math.max(0, Math.min(state.targetMaxTimesTen, state.trackedAmplitude));
-
-                Log.i(TAG, "Keyframe " + state.nextKeyframeIndex + " applied: delta=" + kf.amplitudeDelta +
-                        "%, new amplitude=" + (state.trackedAmplitude / 10.0) + "%" +
-                        " (pulse=" + currentPulseIndex + ", kf_pulse=" + kf.pulseNumber + ")");
-
-                state.nextKeyframeIndex++;
+        // Apply amplitude changes at TRAIN granularity, in the ITI: a change recorded
+        // for train T is applied once the hardware has completed train (T-1) — i.e. in
+        // the gap before train T begins — so the whole of train T is delivered at the
+        // new amplitude with no mid-train bleed (avoids the ~2-pulse lag of writing once
+        // pulses are already firing). Multiple changes recorded within one train collapse
+        // to that train's net amplitude.
+        boolean applied = false;
+        while (state.nextKeyframeIndex < keyframes.size()) {
+            RampKeyframe kf = keyframes.get(state.nextKeyframeIndex);
+            if (currentTrainCount < kf.trainNumber - 1) {
+                break;
             }
 
-            // Write the new amplitude to hardware, then suppress override detection
-            // for a few heartbeats while the hardware catches up to our write.
+            state.trackedAmplitude += kf.amplitudeDelta * 10; // delta is in %, tracked is in % * 10
+
+            // Clamp: never below 0, never above the app's amplitude limit
+            state.trackedAmplitude = Math.max(0, Math.min(state.targetMaxTimesTen, state.trackedAmplitude));
+
+            Log.i(TAG, "Keyframe " + state.nextKeyframeIndex + " applied (train " + kf.trainNumber +
+                    "): delta=" + kf.amplitudeDelta + "%, new amplitude=" + (state.trackedAmplitude / 10.0) +
+                    "% (trainsExecuted=" + currentTrainCount + ", pulse=" + currentPulseIndex + ")");
+
+            state.nextKeyframeIndex++;
+            applied = true;
+        }
+
+        if (applied) {
+            // Write once, in the ITI, then suppress override detection for a few
+            // heartbeats while the hardware catches up to our write.
             writeRequiredVoltage(deviceName, state.trackedAmplitude);
             state.settlingCounter = SETTLING_HEARTBEATS;
         }

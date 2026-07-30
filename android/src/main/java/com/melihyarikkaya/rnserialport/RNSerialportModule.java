@@ -2398,7 +2398,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       eventEmit("onNativeDeviceStatus", statusParams);
 
       // Auto-ramp: check timeline keyframes; emit if a manual override was detected
-      boolean autoRampOverride = autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso, deviceStatus.lastPulseIndex);
+      boolean autoRampOverride = autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso, deviceStatus.lastPulseIndex, deviceStatus.trainsInSequence);
       if (autoRampOverride) {
         WritableMap overrideParams = Arguments.createMap();
         overrideParams.putString("deviceName", deviceName);
@@ -3494,7 +3494,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       eventEmit("onNativeDeviceStatus", statusParams);
 
       // Auto-ramp: check timeline keyframes; emit if a manual override was detected
-      boolean autoRampOverride = autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso, deviceStatus.lastPulseIndex);
+      boolean autoRampOverride = autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso, deviceStatus.lastPulseIndex, deviceStatus.trainsInSequence);
       if (autoRampOverride) {
         WritableMap overrideParams = Arguments.createMap();
         overrideParams.putString("deviceName", deviceName);
