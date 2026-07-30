@@ -28,7 +28,7 @@ public class AutoRampEngine {
     private static final int REQUIRED_VOLTAGE_ADDRESS = 2097;
 
     // Manual-override detection
-    private static final int OVERRIDE_TOLERANCE = 10; // % * 10 => 1.0% deviation
+    private static final int OVERRIDE_TOLERANCE = 1; // % — any hands-on move of >= 1% counts
     private static final int SETTLING_HEARTBEATS = 3; // suppress detection after our own write
 
     // Per-device state
@@ -167,7 +167,7 @@ public class AutoRampEngine {
             // Our own write is still propagating; absorb whatever the hardware reads.
             state.settlingCounter--;
         } else if (state.lastObservedMso >= 0
-                && Math.abs(currentMso - state.lastObservedMso) * 10 > OVERRIDE_TOLERANCE) {
+                && Math.abs(currentMso - state.lastObservedMso) >= OVERRIDE_TOLERANCE) {
             Log.i(TAG, "Manual override detected: hw moved " + state.lastObservedMso
                     + "% -> " + currentMso + "% — disabling auto-ramp");
             state.active = false;
