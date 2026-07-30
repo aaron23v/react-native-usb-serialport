@@ -244,6 +244,25 @@ public class AutoRampEngine {
     }
 
     /**
+     * Enable/disable the ramp for the CURRENT sequence without clearing the timeline
+     * or moving the sequence pointer. Used by the per-sequence on/off toggle: turning
+     * it off stops writes for the rest of this sequence; each new sequence re-activates
+     * on its own status transition, so the next sequence defaults back on.
+     */
+    public void setActive(String deviceName, boolean active) {
+        DeviceRampState state = deviceStates.get(deviceName);
+        if (state == null) return;
+        if (active && state.overridden) return; // a manual override stays off for the session
+        state.active = active;
+        if (active) {
+            // Re-baseline override detection so the paused gap isn't read as a knob turn.
+            state.lastObservedMso = -1;
+            state.settlingCounter = SETTLING_HEARTBEATS;
+        }
+        Log.i(TAG, "Auto-ramp " + (active ? "resumed" : "paused") + " by toggle for " + deviceName);
+    }
+
+    /**
      * Clear all state for a device.
      */
     public void clear(String deviceName) {

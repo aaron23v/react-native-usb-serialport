@@ -4491,6 +4491,12 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
 
     @ReactMethod
+    public void setAutoRampActive(boolean active) {
+        if (heartbeatDevice == null) return;
+        autoRampEngine.setActive(heartbeatDevice, active);
+    }
+
+    @ReactMethod
     public void resetTimestampValidator() {
         timestampValidator.clear();
         android.util.Log.i(TAG, "TIMESTAMP_VALIDATOR: Cleared by JS (sequence repeat)");
