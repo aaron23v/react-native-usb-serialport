@@ -138,8 +138,10 @@ public class AutoRampEngine {
      * @param hardwareTimestamp Treatment progress time in ms from hardware (bytes 37-40)
      * @param treatmentStatus  0=stopped, 1=running, 2=paused
      * @param currentMso       Current actual amplitude from hardware (already divided by 10, in %)
+     * @param currentPulseIndex Live cumulative pulse index within the sequence (bytes 22-23);
+     *                          keyframes are scheduled against this, not elapsed time.
      */
-    public boolean checkAndApply(String deviceName, long hardwareTimestamp, int treatmentStatus, int currentMso) {
+    public boolean checkAndApply(String deviceName, long hardwareTimestamp, int treatmentStatus, int currentMso, int currentPulseIndex) {
         DeviceRampState state = deviceStates.get(deviceName);
         if (state == null || state.timelines.isEmpty()) {
             return false;
@@ -185,13 +187,16 @@ public class AutoRampEngine {
             return false; // All keyframes consumed for this sequence
         }
 
-        // Check if hardware timestamp has passed the next keyframe
+        // Apply keyframes by PULSE position, not elapsed time: replay each amplitude
+        // change when the hardware reaches the pulse it was recorded at. This keeps the
+        // ramp aligned to the same train/pulse across sessions even when their timing
+        // differs (time-based scheduling drifted by a train).
         RampKeyframe nextKf = keyframes.get(state.nextKeyframeIndex);
-        if (hardwareTimestamp >= nextKf.relativeTimestampMs) {
-            // Apply all keyframes that have been passed (in case we skipped some)
+        if (currentPulseIndex >= nextKf.pulseNumber) {
+            // Apply all keyframes whose pulse has been reached (in case we skipped some)
             while (state.nextKeyframeIndex < keyframes.size()) {
                 RampKeyframe kf = keyframes.get(state.nextKeyframeIndex);
-                if (hardwareTimestamp < kf.relativeTimestampMs) {
+                if (currentPulseIndex < kf.pulseNumber) {
                     break;
                 }
 
@@ -202,7 +207,7 @@ public class AutoRampEngine {
 
                 Log.i(TAG, "Keyframe " + state.nextKeyframeIndex + " applied: delta=" + kf.amplitudeDelta +
                         "%, new amplitude=" + (state.trackedAmplitude / 10.0) + "%" +
-                        " (hw_ts=" + hardwareTimestamp + "ms, kf_ts=" + kf.relativeTimestampMs + "ms)");
+                        " (pulse=" + currentPulseIndex + ", kf_pulse=" + kf.pulseNumber + ")");
 
                 state.nextKeyframeIndex++;
             }
