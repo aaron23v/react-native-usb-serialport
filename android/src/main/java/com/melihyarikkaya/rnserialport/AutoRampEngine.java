@@ -257,9 +257,12 @@ public class AutoRampEngine {
         Log.i(TAG, "Treatment status transition: " + oldStatus + " -> " + newStatus + " for " + deviceName);
 
         if (newStatus == 1) {
-            // Treatment started or resumed
-            if (oldStatus != 2) {
-                // Fresh start (not resume from pause)
+            // Treatment started or resumed. Anchor the amplitude on a fresh start,
+            // OR on the very first activation even if it arrives as a resume-from-pause
+            // (the engine can observe an initial PAUSED status before PLAYING). Without
+            // this, trackedAmplitude is never seeded and the ramp starts from 0 instead
+            // of the operator's set amplitude.
+            if (oldStatus != 2 || state.trackedAmplitude < 0) {
                 state.nextKeyframeIndex = 0;
                 state.trackedAmplitude = currentMso * 10; // Initialize from hardware's actual amplitude
                 state.lastObservedMso = currentMso; // baseline for movement detection
