@@ -37,8 +37,15 @@ public class AutoRampEngine {
     // Reference to serial ports for direct USB writes
     private final Map<String, UsbSerialDevice> serialPorts;
 
-    public AutoRampEngine(Map<String, UsbSerialDevice> serialPorts) {
+    // Per-device CRC-enabled state, shared by reference with RNSerialportModule. A 0xAA
+    // write must carry the 16-bit CRC once the PG firmware enables it (>= V0.16); without
+    // it the PG silently rejects the command. Legacy PGs never enable CRC (no-op here).
+    private final Map<String, Boolean> crcEnabledByDevice;
+
+    public AutoRampEngine(Map<String, UsbSerialDevice> serialPorts,
+                          Map<String, Boolean> crcEnabledByDevice) {
         this.serialPorts = serialPorts;
+        this.crcEnabledByDevice = crcEnabledByDevice;
     }
 
     // ── Data structures ──
@@ -336,10 +343,16 @@ public class AutoRampEngine {
         command[5] = (byte) ((amplitudeTimesTen >> 8) & 0xFF); // MSB
         command[6] = (byte) (amplitudeTimesTen & 0xFF);         // LSB
 
+        // Mirror RNSerialportModule.writeSerialportBytes: append the CRC when the PG
+        // firmware has it enabled, otherwise the write is rejected on >= V0.16 firmware.
+        byte[] outgoing = Boolean.TRUE.equals(crcEnabledByDevice.get(deviceName))
+                ? Crc16.append(command)
+                : command;
+
         try {
-            serialPort.write(command);
-            Log.d(TAG, String.format("AUTO-RAMP TX: amplitude=%.1f%% (0x%04X) to %s",
-                    amplitudeTimesTen / 10.0, amplitudeTimesTen, deviceName));
+            serialPort.write(outgoing);
+            Log.d(TAG, String.format("AUTO-RAMP TX: amplitude=%.1f%% (0x%04X, %d bytes) to %s",
+                    amplitudeTimesTen / 10.0, amplitudeTimesTen, outgoing.length, deviceName));
         } catch (Exception e) {
             Log.e(TAG, "Failed to write auto-ramp amplitude: " + e.getMessage(), e);
         }

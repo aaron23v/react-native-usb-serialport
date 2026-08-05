@@ -279,7 +279,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   private UsbManager usbManager;
   public Map<String, UsbSerialDevice> serialPorts = new HashMap<>(); // alias deviceName2SerialPort
     // Initialize auto-ramp engine with reference to serial ports
-    private final AutoRampEngine autoRampEngine = new AutoRampEngine(serialPorts);
+    private final AutoRampEngine autoRampEngine = new AutoRampEngine(serialPorts, crcEnabledByDevice);
   public Map<Integer, String> appBus2DeviceName = new HashMap<>(); // App define which bus id match which deviceName
   public Map<String, Integer> deviceName2SocketId = new HashMap<>();
 
