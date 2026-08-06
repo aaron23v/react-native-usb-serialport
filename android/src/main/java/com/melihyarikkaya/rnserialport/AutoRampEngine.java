@@ -32,10 +32,15 @@ public class AutoRampEngine {
     private static final int OVERRIDE_TOLERANCE = 1; // % — any hands-on move of >= 1% counts
     private static final int SETTLING_HEARTBEATS = 3; // suppress detection after our own write
 
-    // How far ahead of a keyframe's recorded pulse to write its amplitude, so the value
-    // has settled by the time that pulse fires. One pulse is the natural lead: the write
-    // lands in the gap before the target pulse, at whatever rate the protocol runs.
-    private static final int LEAD_PULSES = 1;
+    // How far ahead of a keyframe's recorded pulse to write its amplitude, so the value has
+    // settled by the time that pulse fires. The engine can only act on the device-status
+    // heartbeat, so the lead must cover however many pulses slip past between heartbeats —
+    // measured live (see checkAndApply), since protocols run at very different pulse rates.
+    // MIN keeps slow protocols on a 1-pulse lead, which is exactly right at ~1 Hz; MAX bounds
+    // the reconnect case, where the pulse index jumps by hundreds and an unbounded lead would
+    // fire the rest of the ramp in a single write.
+    private static final int MIN_LEAD_PULSES = 1;
+    private static final int MAX_LEAD_PULSES = 8;
 
     // Per-device state
     private final ConcurrentHashMap<String, DeviceRampState> deviceStates = new ConcurrentHashMap<>();
@@ -86,10 +91,19 @@ public class AutoRampEngine {
         List<SequenceTimeline> timelines = new ArrayList<>();
         int currentSequenceIndex = 0;
         int nextKeyframeIndex = 0;
-        int trackedAmplitude = -1; // current amplitude in % * 10 (e.g. 500 = 50.0%)
+        // Where the reference pattern currently sits, in % * 10. Deliberately NOT clamped:
+        // this is bookkeeping, not a command. Clamping it would make a ceiling hit rewrite
+        // the pattern's memory, so the ramp would rejoin the curve low on the way back down.
+        // The ceiling is applied to the value actually written instead.
+        int trackedAmplitude = -1;
         int targetMaxTimesTen = 1000; // amplitude ceiling in % * 10; default 100.0%
         int settlingCounter = 0; // heartbeats to wait for hardware to reflect our write
         int lastObservedMso = -1; // last hardware amplitude reading (%), to detect real movement
+        // Pulse-rate estimate for the write lead, averaged over the run rather than sampled
+        // heartbeat to heartbeat: at ~1 Hz an instantaneous sample flickers between 0 and 1
+        // pulses, which intermittently doubles the lead and fires keyframes a pulse early.
+        int firstPulseIndexSeen = -1;
+        int heartbeatsSinceStart = 0;
         int lastTreatmentStatus = -1;
         boolean active = false;
         boolean overridden = false; // a manual adjustment disabled ramp for the session
@@ -100,6 +114,8 @@ public class AutoRampEngine {
             trackedAmplitude = -1;
             settlingCounter = 0;
             lastObservedMso = -1;
+            firstPulseIndexSeen = -1;
+            heartbeatsSinceStart = 0;
             active = false;
             overridden = false;
         }
@@ -203,36 +219,52 @@ public class AutoRampEngine {
         }
 
         // Replay each recorded change at its own PULSE position, key for key: the change
-        // recorded at pulse P is written once the hardware reaches pulse (P - LEAD_PULSES),
-        // so the amplitude has settled by the time pulse P fires. Pulse position is the
-        // anchor — not train, and not wall-clock — because it is exact at any pulse rate
-        // and it is what the reference recorded ("pulse P was delivered at X%"). Keyframes
-        // that fall due within the same heartbeat coalesce into a single write; that is a
-        // sub-heartbeat effect only, never a whole train's worth of changes.
+        // recorded at pulse P is written once the hardware reaches pulse (P - lead), so the
+        // amplitude has settled by the time pulse P fires. Pulse position is the anchor —
+        // not train, and not wall-clock — because it is exact at any pulse rate and it is
+        // what the reference recorded ("pulse P was delivered at X%").
+        //
+        // The lead must cover however many pulses slip past between two heartbeats, so it
+        // tracks the run's average pulses-per-heartbeat (rounded up): ~1 Hz averages 0.25 ->
+        // lead 1, 5 Hz averages 1.25 -> lead 2, 10 Hz averages 2.5 -> lead 3. It is averaged
+        // rather than sampled per heartbeat because at ~1 Hz an instantaneous sample flickers
+        // between 0 and 1, which would intermittently fire keyframes a pulse early. Averaging
+        // also dilutes a reconnect jump instead of reacting to it.
+        if (state.firstPulseIndexSeen < 0) {
+            state.firstPulseIndexSeen = currentPulseIndex;
+        } else {
+            state.heartbeatsSinceStart++;
+        }
+        int lead = MIN_LEAD_PULSES;
+        int pulsesElapsed = Math.max(0, currentPulseIndex - state.firstPulseIndexSeen);
+        if (state.heartbeatsSinceStart > 0 && pulsesElapsed > 0) {
+            int avgCeil = (pulsesElapsed + state.heartbeatsSinceStart - 1) / state.heartbeatsSinceStart;
+            lead = Math.max(MIN_LEAD_PULSES, Math.min(avgCeil, MAX_LEAD_PULSES));
+        }
+
         boolean applied = false;
         while (state.nextKeyframeIndex < keyframes.size()) {
             RampKeyframe kf = keyframes.get(state.nextKeyframeIndex);
-            if (currentPulseIndex + LEAD_PULSES < kf.pulseNumber) {
+            if (currentPulseIndex + lead < kf.pulseNumber) {
                 break;
             }
 
             state.trackedAmplitude += kf.amplitudeDelta * 10; // delta is in %, tracked is in % * 10
 
-            // Clamp: never below 0, never above the app's amplitude limit
-            state.trackedAmplitude = Math.max(0, Math.min(state.targetMaxTimesTen, state.trackedAmplitude));
-
             Log.i(TAG, "Keyframe " + state.nextKeyframeIndex + " applied (target pulse " + kf.pulseNumber +
-                    "): delta=" + kf.amplitudeDelta + "%, new amplitude=" + (state.trackedAmplitude / 10.0) +
-                    "% (pulse=" + currentPulseIndex + ", trainsExecuted=" + currentTrainCount + ")");
+                    "): delta=" + kf.amplitudeDelta + "%, pattern=" + (state.trackedAmplitude / 10.0) +
+                    "% (pulse=" + currentPulseIndex + ", lead=" + lead + ", trainsExecuted=" + currentTrainCount + ")");
 
             state.nextKeyframeIndex++;
             applied = true;
         }
 
         if (applied) {
-            // Write the amplitude these keyframes resolve to, then suppress override
-            // detection for a few heartbeats while the hardware catches up to our write.
-            writeRequiredVoltage(deviceName, state.trackedAmplitude);
+            // Command the pattern value bounded by the prescribed ceiling (and never below 0).
+            // Only the command is clamped — trackedAmplitude keeps following the real curve, so
+            // a ramp that tops out rides the ceiling and rejoins the curve correctly coming down.
+            int commanded = Math.max(0, Math.min(state.targetMaxTimesTen, state.trackedAmplitude));
+            writeRequiredVoltage(deviceName, commanded);
             state.settlingCounter = SETTLING_HEARTBEATS;
         }
 
@@ -248,6 +280,10 @@ public class AutoRampEngine {
 
         state.currentSequenceIndex++;
         state.nextKeyframeIndex = 0;
+        // The hardware pulse index restarts per sequence — restart the rate estimate too,
+        // so the reset is not read as a jump and the new sequence measures its own rate.
+        state.firstPulseIndexSeen = -1;
+        state.heartbeatsSinceStart = 0;
         // Each sequence's on/off is independent: clear any override from the previous
         // sequence so this one re-activates on its status transition.
         state.overridden = false;
@@ -311,6 +347,8 @@ public class AutoRampEngine {
                 state.nextKeyframeIndex = 0;
                 state.trackedAmplitude = currentMso * 10; // Initialize from hardware's actual amplitude
                 state.lastObservedMso = currentMso; // baseline for movement detection
+                state.firstPulseIndexSeen = -1; // pulse counting restarts with the run
+                state.heartbeatsSinceStart = 0;
                 Log.i(TAG, "Auto-ramp started. Initial amplitude: " + currentMso + "%");
             }
             // A manual override disables ramp for the session; pause/resume must
@@ -324,6 +362,8 @@ public class AutoRampEngine {
         } else if (newStatus == 0) {
             // Stopped — reset keyframe pointer for current sequence
             state.nextKeyframeIndex = 0;
+            state.firstPulseIndexSeen = -1;
+            state.heartbeatsSinceStart = 0;
             state.active = false;
             Log.i(TAG, "Auto-ramp stopped");
         }
