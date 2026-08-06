@@ -15,8 +15,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * Native auto-ramp engine for TMS amplitude control.
  *
  * Loaded once from JS with a per-sequence timeline of amplitude deltas.
- * On each heartbeat, compares hardware treatment timestamp against the next
- * keyframe and writes the new Required Voltage directly to USB serial.
+ * On each heartbeat, compares the hardware's live pulse index against the next
+ * keyframe's recorded pulse and writes the new Required Voltage directly to USB
+ * serial, reproducing the reference session change for change.
  *
  * No timer thread — piggybacks on the existing heartbeat/device-status loop.
  */
@@ -30,6 +31,11 @@ public class AutoRampEngine {
     // Manual-override detection
     private static final int OVERRIDE_TOLERANCE = 1; // % — any hands-on move of >= 1% counts
     private static final int SETTLING_HEARTBEATS = 3; // suppress detection after our own write
+
+    // How far ahead of a keyframe's recorded pulse to write its amplitude, so the value
+    // has settled by the time that pulse fires. One pulse is the natural lead: the write
+    // lands in the gap before the target pulse, at whatever rate the protocol runs.
+    private static final int LEAD_PULSES = 1;
 
     // Per-device state
     private final ConcurrentHashMap<String, DeviceRampState> deviceStates = new ConcurrentHashMap<>();
@@ -145,9 +151,10 @@ public class AutoRampEngine {
      * @param hardwareTimestamp Treatment progress time in ms from hardware (bytes 37-40)
      * @param treatmentStatus  0=stopped, 1=running, 2=paused
      * @param currentMso       Current actual amplitude from hardware (already divided by 10, in %)
-     * @param currentPulseIndex Live cumulative pulse index within the sequence (bytes 22-23).
-     * @param currentTrainCount Trains executed so far in the sequence (bytes 20-21); keyframes
-     *                          are scheduled by train and applied in the ITI before their train.
+     * @param currentPulseIndex Live cumulative pulse index within the sequence (bytes 22-23);
+     *                          keyframes are scheduled against this, one write per recorded
+     *                          change, applied LEAD_PULSES ahead of the pulse they belong to.
+     * @param currentTrainCount Trains executed so far in the sequence (bytes 20-21); diagnostic only.
      */
     public boolean checkAndApply(String deviceName, long hardwareTimestamp, int treatmentStatus, int currentMso, int currentPulseIndex, int currentTrainCount) {
         DeviceRampState state = deviceStates.get(deviceName);
@@ -195,16 +202,17 @@ public class AutoRampEngine {
             return false; // All keyframes consumed for this sequence
         }
 
-        // Apply amplitude changes at TRAIN granularity, in the ITI: a change recorded
-        // for train T is applied once the hardware has completed train (T-1) — i.e. in
-        // the gap before train T begins — so the whole of train T is delivered at the
-        // new amplitude with no mid-train bleed (avoids the ~2-pulse lag of writing once
-        // pulses are already firing). Multiple changes recorded within one train collapse
-        // to that train's net amplitude.
+        // Replay each recorded change at its own PULSE position, key for key: the change
+        // recorded at pulse P is written once the hardware reaches pulse (P - LEAD_PULSES),
+        // so the amplitude has settled by the time pulse P fires. Pulse position is the
+        // anchor — not train, and not wall-clock — because it is exact at any pulse rate
+        // and it is what the reference recorded ("pulse P was delivered at X%"). Keyframes
+        // that fall due within the same heartbeat coalesce into a single write; that is a
+        // sub-heartbeat effect only, never a whole train's worth of changes.
         boolean applied = false;
         while (state.nextKeyframeIndex < keyframes.size()) {
             RampKeyframe kf = keyframes.get(state.nextKeyframeIndex);
-            if (currentTrainCount < kf.trainNumber - 1) {
+            if (currentPulseIndex + LEAD_PULSES < kf.pulseNumber) {
                 break;
             }
 
@@ -213,17 +221,17 @@ public class AutoRampEngine {
             // Clamp: never below 0, never above the app's amplitude limit
             state.trackedAmplitude = Math.max(0, Math.min(state.targetMaxTimesTen, state.trackedAmplitude));
 
-            Log.i(TAG, "Keyframe " + state.nextKeyframeIndex + " applied (train " + kf.trainNumber +
+            Log.i(TAG, "Keyframe " + state.nextKeyframeIndex + " applied (target pulse " + kf.pulseNumber +
                     "): delta=" + kf.amplitudeDelta + "%, new amplitude=" + (state.trackedAmplitude / 10.0) +
-                    "% (trainsExecuted=" + currentTrainCount + ", pulse=" + currentPulseIndex + ")");
+                    "% (pulse=" + currentPulseIndex + ", trainsExecuted=" + currentTrainCount + ")");
 
             state.nextKeyframeIndex++;
             applied = true;
         }
 
         if (applied) {
-            // Write once, in the ITI, then suppress override detection for a few
-            // heartbeats while the hardware catches up to our write.
+            // Write the amplitude these keyframes resolve to, then suppress override
+            // detection for a few heartbeats while the hardware catches up to our write.
             writeRequiredVoltage(deviceName, state.trackedAmplitude);
             state.settlingCounter = SETTLING_HEARTBEATS;
         }
