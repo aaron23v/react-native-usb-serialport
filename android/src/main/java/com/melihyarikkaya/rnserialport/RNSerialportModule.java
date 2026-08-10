@@ -278,6 +278,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
   private UsbManager usbManager;
   public Map<String, UsbSerialDevice> serialPorts = new HashMap<>(); // alias deviceName2SerialPort
+  // Devices with an open in flight. serialPorts is only populated once ConnectionThread
+  // finishes, so it alone cannot dedupe concurrent connect attempts: on attach both the
+  // native autoConnect path and the JS side call connectDevice(), and whichever checks
+  // first sees an empty map. Claiming here makes check-and-claim a single atomic step.
+  private final Set<String> connectingDevices = ConcurrentHashMap.newKeySet();
     // Initialize auto-ramp engine with reference to serial ports
     private final AutoRampEngine autoRampEngine = new AutoRampEngine(serialPorts, crcEnabledByDevice);
   public Map<Integer, String> appBus2DeviceName = new HashMap<>(); // App define which bus id match which deviceName
@@ -701,12 +706,15 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         return;
       }
 
-      if(serialPorts.get(deviceName) != null) {
+      // add() returns false when another attempt already holds the claim, so the
+      // already-connected check and the claim happen without a gap between them.
+      if(serialPorts.get(deviceName) != null || !connectingDevices.add(deviceName)) {
         eventEmit(onErrorEvent, createError(deviceName, Definitions.ERROR_SERIALPORT_ALREADY_CONNECTED, Definitions.ERROR_SERIALPORT_ALREADY_CONNECTED_MESSAGE));
         return;
       }
 
       if(baudRate < 1){
+        connectingDevices.remove(deviceName);
         eventEmit(onErrorEvent, createError(deviceName, Definitions.ERROR_CONNECT_BAUDRATE_EMPTY, Definitions.ERROR_CONNECT_BAUDRATE_EMPTY_MESSAGE));
         return;
       }
@@ -718,6 +726,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       UsbDevice device = chooseDevice(deviceName);
 
       if(device == null) {
+        connectingDevices.remove(deviceName);
         eventEmit(onErrorEvent, createError(deviceName, Definitions.ERROR_X_DEVICE_NOT_FOUND, Definitions.ERROR_X_DEVICE_NOT_FOUND_MESSAGE + deviceName));
         return;
       }
@@ -729,6 +738,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       }
 
     } catch (Exception err) {
+      connectingDevices.remove(deviceName);
       eventEmit(onErrorEvent, createError(deviceName, Definitions.ERROR_CONNECTION_FAILED, Definitions.ERROR_CONNECTION_FAILED_MESSAGE + " Catch Error Message:" + err.getMessage()));
     }
   }
@@ -1092,6 +1102,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         WritableMap map = createError(Definitions.ERROR_CONNECTION_FAILED, Definitions.ERROR_CONNECTION_FAILED_MESSAGE);
         map.putString("exceptionErrorMessage", error.getMessage());
         eventEmit(onErrorEvent, map);
+      } finally {
+        // Covers success, the unsupported/not-opened early returns and any throw. On
+        // success serialPorts already holds the entry, so the original guard takes over
+        // with no gap; on failure the device is free to be retried.
+        if(device != null) {
+          connectingDevices.remove(device.getDeviceName());
+        }
       }
     }
   }
@@ -1113,6 +1130,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       UsbDeviceConnection connection = usbManager.openDevice(device);
       new ConnectionThread(device, connection).start();
     } else {
+      // The claim is taken before the permission prompt; without this a denial would
+      // hold it forever and block every later connect for this device.
+      if(device != null) {
+        connectingDevices.remove(device.getDeviceName());
+      }
       Intent intent = new Intent(ACTION_USB_PERMISSION_NOT_GRANTED);
       mReactContext.sendBroadcast(intent);
     }
@@ -1127,6 +1149,8 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   private void stopConnection(String deviceName) {
     android.util.Log.i(TAG, "🛑 stopConnection: Starting graceful shutdown for: " + deviceName);
+
+    connectingDevices.remove(deviceName);
 
     UsbSerialDevice serialPort = serialPorts.get(deviceName);
     if(serialPort == null) {
