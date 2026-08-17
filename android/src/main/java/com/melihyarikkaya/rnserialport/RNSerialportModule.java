@@ -336,7 +336,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
           if (disconnectedDevice != null &&
               deviceLoggingActive.getOrDefault(disconnectedDevice, false)) {
-              android.util.Log.w(TAG, "USB_DISCONNECT: Device was collecting logs, cleaning up");
+              AmpaLog.w(TAG, "USB_DISCONNECT: Device was collecting logs, cleaning up");
               cleanupLogCollectionState(disconnectedDevice, true);
               emitLogError(disconnectedDevice, "Device disconnected during log collection");
           }
@@ -417,7 +417,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           eventEmit(onUsbPermissionGranted, null);
           break;
         case ACTION_USB_PERMISSION_NOT_GRANTED:
-          android.util.Log.d(TAG, "USB permission denied by user");
+          AmpaLog.d(TAG, "USB permission denied by user");
           synchronized(mPermissionLock) {
             mPermissionRequested = false;  // Allow retry if user wants to reconnect
           }
@@ -1148,13 +1148,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * 3. Then closing the connection safely with exception handling
    */
   private void stopConnection(String deviceName) {
-    android.util.Log.i(TAG, "🛑 stopConnection: Starting graceful shutdown for: " + deviceName);
+    AmpaLog.i(TAG, "🛑 stopConnection: Starting graceful shutdown for: " + deviceName);
 
     connectingDevices.remove(deviceName);
 
     UsbSerialDevice serialPort = serialPorts.get(deviceName);
     if(serialPort == null) {
-      android.util.Log.w(TAG, "🛑 stopConnection: No active connection for: " + deviceName);
+      AmpaLog.w(TAG, "🛑 stopConnection: No active connection for: " + deviceName);
       eventEmit(onErrorEvent, createError(Definitions.ERROR_THERE_IS_NO_CONNECTION, Definitions.ERROR_THERE_IS_NO_CONNECTION_MESSAGE));
       return;
     }
@@ -1162,7 +1162,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // FIX TMS-APP-37: Remove from map FIRST to prevent new event emissions
     // This ensures libusb won't try to emit events after we start closing
     serialPorts.remove(deviceName);
-    android.util.Log.d(TAG, "🛑 stopConnection: Removed serial port from active map");
+    AmpaLog.d(TAG, "🛑 stopConnection: Removed serial port from active map");
 
     // Remove the per-device packet buffer entirely: the device is disconnecting, so its
     // buffer reaches true end-of-life here and is reclaimed. A future reconnect (even with the
@@ -1171,7 +1171,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // there and its CRC framing must be preserved.)
     NativePacketBuffer removedBuffer = devicePacketBuffers.remove(deviceName);
     if (removedBuffer != null) {
-      android.util.Log.i(TAG, "🛑 stopConnection: Removed packet buffer for: " + deviceName);
+      AmpaLog.i(TAG, "🛑 stopConnection: Removed packet buffer for: " + deviceName);
     }
 
     // Forget CRC enablement + cached firmware identity so a reconnected (or different) PG
@@ -1184,17 +1184,17 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     try {
       Thread.sleep(100); // 100ms is enough for libusb event queue to drain
     } catch (InterruptedException e) {
-      android.util.Log.w(TAG, "🛑 stopConnection: Sleep interrupted: " + e.getMessage());
+      AmpaLog.w(TAG, "🛑 stopConnection: Sleep interrupted: " + e.getMessage());
       Thread.currentThread().interrupt();
     }
 
     // Now safely close the connection with exception handling
     try {
       serialPort.close();
-      android.util.Log.i(TAG, "✅ stopConnection: USB connection closed successfully for: " + deviceName);
+      AmpaLog.i(TAG, "✅ stopConnection: USB connection closed successfully for: " + deviceName);
     } catch (Exception e) {
       // Catch any exceptions from close() to prevent crash propagation
-      android.util.Log.e(TAG, "❌ stopConnection: Error closing USB connection (non-fatal): " + e.getMessage(), e);
+      AmpaLog.e(TAG, "❌ stopConnection: Error closing USB connection (non-fatal): " + e.getMessage(), e);
     }
 
     if (deviceName != null) appBus2DeviceName.values().removeIf(deviceName::equals);
@@ -1554,7 +1554,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * Start the queue processor - single 50ms interval system
    */
   private void startQueueProcessor() {
-    android.util.Log.i(TAG, "Starting native serial queue processor with 50ms intervals");
+    AmpaLog.i(TAG, "Starting native serial queue processor with 50ms intervals");
 
     // Start continuous queue processing every 50ms
     queueScheduler.scheduleAtFixedRate(() -> {
@@ -1898,19 +1898,19 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
     retryTimeouts.clear();
 
-    android.util.Log.i(TAG, "Native queue cleared");
+    AmpaLog.i(TAG, "Native queue cleared");
   }
 
   @ReactMethod
   public void pauseQueue() {
     isPaused = true;
-    android.util.Log.i(TAG, "Native queue paused");
+    AmpaLog.i(TAG, "Native queue paused");
   }
 
   @ReactMethod
   public void resumeQueue() {
     isPaused = false;
-    android.util.Log.i(TAG, "Native queue resumed");
+    AmpaLog.i(TAG, "Native queue resumed");
   }
 
   @ReactMethod
@@ -1932,36 +1932,36 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    * Cleanup method to properly shutdown resources
    */
   private void cleanup() {
-    android.util.Log.i(TAG, "🧹 CLEANUP: Starting module cleanup");
+    AmpaLog.i(TAG, "🧹 CLEANUP: Starting module cleanup");
 
     try {
       // CRITICAL: Clean up all active log collections
       for (Map.Entry<String, Boolean> entry : deviceLoggingActive.entrySet()) {
         if (entry.getValue()) {
           String device = entry.getKey();
-          android.util.Log.w(TAG, "🧹 CLEANUP: Active log collection found for: " + device);
+          AmpaLog.w(TAG, "🧹 CLEANUP: Active log collection found for: " + device);
           cleanupLogCollectionState(device, true);
         }
       }
     } catch (Exception e) {
-      android.util.Log.e(TAG, "❌ CLEANUP: Error cleaning up log collections: " + e.getMessage());
+      AmpaLog.e(TAG, "❌ CLEANUP: Error cleaning up log collections: " + e.getMessage());
     }
 
     // FIX TMS-APP-56: Stop all USB connections BEFORE shutting down executors
     // This prevents race condition where USB read callbacks try to submit tasks to terminated executor
     if (serialPorts != null && !serialPorts.isEmpty()) {
-      android.util.Log.i(TAG, "🧹 CLEANUP: Stopping " + serialPorts.size() + " active USB connection(s)");
+      AmpaLog.i(TAG, "🧹 CLEANUP: Stopping " + serialPorts.size() + " active USB connection(s)");
       // Create copy to avoid ConcurrentModificationException since stopConnection modifies the map
       java.util.List<String> deviceNames = new java.util.ArrayList<>(serialPorts.keySet());
       for (String deviceName : deviceNames) {
         try {
-          android.util.Log.d(TAG, "🧹 CLEANUP: Stopping USB connection for: " + deviceName);
+          AmpaLog.d(TAG, "🧹 CLEANUP: Stopping USB connection for: " + deviceName);
           stopConnection(deviceName);
         } catch (Exception e) {
-          android.util.Log.e(TAG, "❌ CLEANUP: Error stopping connection for " + deviceName + ": " + e.getMessage());
+          AmpaLog.e(TAG, "❌ CLEANUP: Error stopping connection for " + deviceName + ": " + e.getMessage());
         }
       }
-      android.util.Log.i(TAG, "✅ CLEANUP: All USB connections stopped");
+      AmpaLog.i(TAG, "✅ CLEANUP: All USB connections stopped");
     }
 
     // Stop heartbeat
@@ -1976,11 +1976,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       usbWriteExecutor.shutdown();
       try {
         if (!usbWriteExecutor.awaitTermination(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-          android.util.Log.w(TAG, "USB write executor did not terminate gracefully, forcing shutdown");
+          AmpaLog.w(TAG, "USB write executor did not terminate gracefully, forcing shutdown");
           usbWriteExecutor.shutdownNow();
         }
       } catch (InterruptedException e) {
-        android.util.Log.w(TAG, "USB write executor cleanup interrupted, forcing shutdown");
+        AmpaLog.w(TAG, "USB write executor cleanup interrupted, forcing shutdown");
         usbWriteExecutor.shutdownNow();
         Thread.currentThread().interrupt();
       }
@@ -1991,11 +1991,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       usbProcessingExecutor.shutdown();
       try {
         if (!usbProcessingExecutor.awaitTermination(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-          android.util.Log.w(TAG, "USB processing executor did not terminate gracefully, forcing shutdown");
+          AmpaLog.w(TAG, "USB processing executor did not terminate gracefully, forcing shutdown");
           usbProcessingExecutor.shutdownNow();
         }
       } catch (InterruptedException e) {
-        android.util.Log.w(TAG, "USB processing executor cleanup interrupted, forcing shutdown");
+        AmpaLog.w(TAG, "USB processing executor cleanup interrupted, forcing shutdown");
         usbProcessingExecutor.shutdownNow();
         Thread.currentThread().interrupt();
       }
@@ -2005,7 +2005,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     if (devicePacketBuffers != null && !devicePacketBuffers.isEmpty()) {
       int bufferCount = devicePacketBuffers.size();
       devicePacketBuffers.clear();
-      android.util.Log.d(TAG, "🧹 Cleared " + bufferCount + " device packet buffer(s) on module cleanup");
+      AmpaLog.d(TAG, "🧹 Cleared " + bufferCount + " device packet buffer(s) on module cleanup");
     }
 
     // Shutdown scheduler with timeout
@@ -2014,17 +2014,17 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       try {
         // Wait for termination for up to specified timeout
         if (!queueScheduler.awaitTermination(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-          android.util.Log.w(TAG, "Queue scheduler did not terminate gracefully, forcing shutdown");
+          AmpaLog.w(TAG, "Queue scheduler did not terminate gracefully, forcing shutdown");
           queueScheduler.shutdownNow();
         }
       } catch (InterruptedException e) {
-        android.util.Log.w(TAG, "Cleanup interrupted, forcing shutdown");
+        AmpaLog.w(TAG, "Cleanup interrupted, forcing shutdown");
         queueScheduler.shutdownNow();
         Thread.currentThread().interrupt();
       }
     }
 
-    android.util.Log.i(TAG, "Cleanup completed");
+    AmpaLog.i(TAG, "Cleanup completed");
   }
 
   // ============== Heartbeat Integration ==============
@@ -2032,30 +2032,30 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   @ReactMethod
   public void startHeartbeat(String deviceName) {
     // MODIFIED: Heartbeat runs continuously - switches to lightweight command during log collection
-    android.util.Log.i(TAG, "Starting native heartbeat for device: " + deviceName);
+    AmpaLog.i(TAG, "Starting native heartbeat for device: " + deviceName);
 
     // Check if thread pools are available before attempting to schedule tasks
     if (queueScheduler == null || queueScheduler.isShutdown()) {
-      android.util.Log.w(TAG, "Cannot start heartbeat - scheduler is not available or has been shut down");
+      AmpaLog.w(TAG, "Cannot start heartbeat - scheduler is not available or has been shut down");
       return;
     }
 
     // Check if already running for this device
     if (heartbeatDevice != null && heartbeatDevice.equals(deviceName)) {
-      android.util.Log.d(TAG, "💚 Heartbeat already running for: " + deviceName);
+      AmpaLog.d(TAG, "💚 Heartbeat already running for: " + deviceName);
       return;
     }
 
     // Turn camera ON if reconnecting while in control mode
     if (controlMode != null) {
-      android.util.Log.d(TAG, "USB reconnect in control mode - turning camera ON");
+      AmpaLog.d(TAG, "USB reconnect in control mode - turning camera ON");
       addToNativeQueue(deviceName, CAMERA_ON_COMMAND, PRIORITY_NORMAL, "camera_on_reconnect", 0);
     }
 
     stopHeartbeat();
 
     if (!serialPorts.containsKey(deviceName)) {
-      android.util.Log.w(TAG, "Cannot start heartbeat - device not connected: " + deviceName);
+      AmpaLog.w(TAG, "Cannot start heartbeat - device not connected: " + deviceName);
       return;
     }
 
@@ -2076,9 +2076,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         }
       }, 0, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
 
-      android.util.Log.i(TAG, "Native heartbeat started - first command immediate, then every " + HEARTBEAT_INTERVAL_MS + "ms");
+      AmpaLog.i(TAG, "Native heartbeat started - first command immediate, then every " + HEARTBEAT_INTERVAL_MS + "ms");
     } catch (java.util.concurrent.RejectedExecutionException e) {
-      android.util.Log.w(TAG, "Failed to start heartbeat - scheduler rejected task: " + e.getMessage());
+      AmpaLog.w(TAG, "Failed to start heartbeat - scheduler rejected task: " + e.getMessage());
     }
   }
 
@@ -2086,7 +2086,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   public void stopHeartbeat() {
     if (heartbeatTimer != null && !heartbeatTimer.isCancelled()) {
       heartbeatTimer.cancel(false);
-      android.util.Log.i(TAG, "Stopped native heartbeat for device: " + heartbeatDevice);
+      AmpaLog.i(TAG, "Stopped native heartbeat for device: " + heartbeatDevice);
     }
     heartbeatTimer = null;
     heartbeatDevice = null;
@@ -2196,13 +2196,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         // Runtime proof the CRC algorithm produces the documented check value on this build.
         boolean selfTest = Crc16.selfTestPasses();
         if (!selfTest) {
-          android.util.Log.e(TAG, "CRC SELF-TEST FAILED — algorithm is broken on this build; " +
+          AmpaLog.e(TAG, "CRC SELF-TEST FAILED — algorithm is broken on this build; " +
               "every frame will fail validation!");
         }
-        android.util.Log.i(TAG, "CRC ENABLED for " + deviceName + " — PG firmware V" + major + "." +
+        AmpaLog.i(TAG, "CRC ENABLED for " + deviceName + " — PG firmware V" + major + "." +
             minor + " (self-test " + (selfTest ? "OK" : "FAILED") + ")");
       } else {
-        android.util.Log.i(TAG, "CRC disabled (legacy PG) for " + deviceName +
+        AmpaLog.i(TAG, "CRC disabled (legacy PG) for " + deviceName +
             " — PG firmware V" + major + "." + minor);
       }
     }
@@ -2389,14 +2389,14 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
       // 🛡️ SAFETY CHECK: Reject hardware enable if not on control screen
       if (deviceStatus.magVentureEnabled && controlMode == null) {
-        android.util.Log.w(TAG, "⚠️ HARDWARE BUTTON PRESSED - REJECTING (not on control screen)");
+        AmpaLog.w(TAG, "⚠️ HARDWARE BUTTON PRESSED - REJECTING (not on control screen)");
         addToNativeQueue(deviceName, PG_DISABLE_COMMAND, PRIORITY_FRONT, "reject_hardware_enable", 0);
         return; // Skip event emission - don't notify JS layer
       }
 
       // 🛡️ SAFETY CHECK: Disable PG if coil is disconnected
       if (deviceStatus.coilDisconnected) {
-        android.util.Log.e(TAG, "🔌 COIL DISCONNECTED - Disabling PG for safety");
+        AmpaLog.e(TAG, "🔌 COIL DISCONNECTED - Disabling PG for safety");
         addToNativeQueue(deviceName, PG_DISABLE_COMMAND, PRIORITY_FRONT, "coil_disconnected_disable", 0);
         // Continue to emit event so JS layer can show error toast
       }
@@ -2453,12 +2453,12 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // (e.g., /dev/bus/usb/001/012 -> /dev/bus/usb/001/016) during reconnection.
       // Instead, rely on wasCollectingLogs flag and pulse index validation.
       if (wasCollectingLogs) {
-        android.util.Log.i(TAG, "🔄 Auto-resume validation: Device reconnected during log collection: " + deviceName +
+        AmpaLog.i(TAG, "🔄 Auto-resume validation: Device reconnected during log collection: " + deviceName +
                           " (original device was: " + lastCollectionDevice + ")");
 
         // Validate device memory state using lastPulseIndex
         if (deviceStatus.lastPulseIndex == lastExpectedPulseIndex && lastExpectedPulseIndex > 0) {
-          android.util.Log.i(TAG, "✅ Auto-resume validation PASSED: lastPulseIndex matches (" +
+          AmpaLog.i(TAG, "✅ Auto-resume validation PASSED: lastPulseIndex matches (" +
                             deviceStatus.lastPulseIndex + "), resuming log collection");
 
           // Cancel validation timeout for BOTH old and new device names
@@ -2477,13 +2477,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           lastCollectionDevice = null;
           lastExpectedPulseIndex = 0;
 
-          android.util.Log.i(TAG, "🔄 Resuming log collection: " + originalDevice + " -> " + deviceName);
+          AmpaLog.i(TAG, "🔄 Resuming log collection: " + originalDevice + " -> " + deviceName);
 
           // Resume log collection from where we left off
           autoStartLogCollection(deviceName, deviceStatus.lastPulseIndex);
         } else {
           // Validation FAILED - device memory doesn't match expected state
-          android.util.Log.e(TAG, "❌ Auto-resume validation FAILED: Expected lastPulseIndex=" +
+          AmpaLog.e(TAG, "❌ Auto-resume validation FAILED: Expected lastPulseIndex=" +
                             lastExpectedPulseIndex + ", actual=" + deviceStatus.lastPulseIndex +
                             " (device path changed: " + lastCollectionDevice + " -> " + deviceName + ")");
 
@@ -2524,13 +2524,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           (prevTreatmentStatus == 1 || prevTreatmentStatus == 2)) {
 
         if ("TREATMENT".equals(currentControlMode)) {
-          android.util.Log.i(TAG, "Treatment completion detected: " + deviceName +
+          AmpaLog.i(TAG, "Treatment completion detected: " + deviceName +
                             " status: " + prevTreatmentStatus + " -> 0, pulses: " +
                             prevPulseIndex + " -> " + deviceStatus.lastPulseIndex);
 
           autoStartLogCollection(deviceName, deviceStatus.lastPulseIndex);
         } else {
-          android.util.Log.i(TAG, "Sequence completion in " + currentControlMode + " mode - skipping auto-log collection: " + deviceName);
+          AmpaLog.i(TAG, "Sequence completion in " + currentControlMode + " mode - skipping auto-log collection: " + deviceName);
         }
       }
 
@@ -3644,7 +3644,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   private void cleanupLogCollectionState(String deviceName, boolean resumeHeartbeat, boolean clearPulseTracking) {
     try {
       // DIAGNOSTIC: Log stack trace to identify what triggered cleanup
-      android.util.Log.w(TAG, "🧹 CLEANUP TRIGGERED for: " + deviceName +
+      AmpaLog.w(TAG, "🧹 CLEANUP TRIGGERED for: " + deviceName +
                         " (resumeHeartbeat=" + resumeHeartbeat + ", clearPulseTracking=" + clearPulseTracking + ")" +
                         "\nStack trace:\n" + android.util.Log.getStackTraceString(new Exception()));
 
@@ -3676,7 +3676,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       lastProcessedTreatmentStatus = -1;
       lastProcessedPulseIndex = -1;
       deviceSuppressNextLogCollection.remove(deviceName);
-      android.util.Log.d(TAG, "🧹 Reset treatment status tracking for next sequence");
+      AmpaLog.d(TAG, "🧹 Reset treatment status tracking for next sequence");
 
       // Flush the per-device packet buffer, but do NOT remove it: this cleanup runs while the
       // device is still connected (e.g. log-collection completed), and removing the buffer would
@@ -3719,17 +3719,17 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       if (deviceName != null && deviceName.equals(logCollectionDevice)) {
         isCollectingLogs = false;
         logCollectionDevice = null;
-        android.util.Log.i(TAG, "💓 Heartbeat switching back to full status mode");
+        AmpaLog.i(TAG, "💓 Heartbeat switching back to full status mode");
       } else {
-        android.util.Log.w(TAG, "⚠️ Different device was collecting logs");
+        AmpaLog.w(TAG, "⚠️ Different device was collecting logs");
       }
 
     } catch (Exception e) {
-      android.util.Log.e(TAG, "❌ Error during cleanup: " + e.getMessage());
+      AmpaLog.e(TAG, "❌ Error during cleanup: " + e.getMessage());
       // SAFETY: Force cleanup even on error - heartbeat continues running
       isCollectingLogs = false;
       logCollectionDevice = null;
-      android.util.Log.i(TAG, "💓 Heartbeat will automatically switch back to full mode");
+      AmpaLog.i(TAG, "💓 Heartbeat will automatically switch back to full mode");
     }
   }
 
@@ -3745,25 +3745,25 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
       // Check suppress flag (set by JS before discard/stop to prevent unwanted log collection)
       if (deviceSuppressNextLogCollection.getOrDefault(deviceName, false)) {
-        android.util.Log.i(TAG, "⏭️ Suppressing auto-log collection for: " + deviceName + " (discard/cancel requested)");
+        AmpaLog.i(TAG, "⏭️ Suppressing auto-log collection for: " + deviceName + " (discard/cancel requested)");
         deviceSuppressNextLogCollection.put(deviceName, false);
         return;
       }
 
       // CRITICAL: Check if already collecting for THIS device
       if (deviceLoggingActive.getOrDefault(deviceName, false)) {
-        android.util.Log.w(TAG, "⚠️ Log collection already active for: " + deviceName);
+        AmpaLog.w(TAG, "⚠️ Log collection already active for: " + deviceName);
         return;
       }
 
       // CRITICAL: Check if collecting for ANOTHER device
       if (isCollectingLogs && deviceName != null && !deviceName.equals(logCollectionDevice)) {
-        android.util.Log.w(TAG, "⚠️ Cannot start collection - another device active: " +
+        AmpaLog.w(TAG, "⚠️ Cannot start collection - another device active: " +
                           logCollectionDevice);
         return;
       }
 
-      android.util.Log.i(TAG, "🔄 Starting log collection: " + deviceName +
+      AmpaLog.i(TAG, "🔄 Starting log collection: " + deviceName +
                         " (" + lastPulseIndex + " pulses)");
 
       // Set collection flags
@@ -3779,7 +3779,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // Without this, batch numbers continue from previous sequence causing incorrect completion logic
       devicePulseBatchesSent.remove(deviceName);
       devicePulseBatchesAcked.remove(deviceName);
-      android.util.Log.d(TAG, "🔄 Reset batch counters for new log collection sequence");
+      AmpaLog.d(TAG, "🔄 Reset batch counters for new log collection sequence");
 
       // CRITICAL: DO NOT clear the Set here - keep live treatment pulses to reject duplicates
       // Log collection reads from device MEMORY (which contains ALL pulses from treatment)
@@ -3793,7 +3793,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           deviceName,
           k -> ConcurrentHashMap.newKeySet()
       );
-      android.util.Log.d(TAG, "🔢 Log collection starting: Set has " + seenPulses.size() + " pulses from live treatment, expecting " + lastPulseIndex + " total");
+      AmpaLog.d(TAG, "🔢 Log collection starting: Set has " + seenPulses.size() + " pulses from live treatment, expecting " + lastPulseIndex + " total");
 
       // Emit START status for UI progress modal
       WritableMap params = Arguments.createMap();
@@ -3805,7 +3805,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       nativeReadLogData(deviceName);
 
     } catch (Exception e) {
-      android.util.Log.e(TAG, "❌ Error starting log collection: " + e.getMessage());
+      AmpaLog.e(TAG, "❌ Error starting log collection: " + e.getMessage());
       // CRITICAL: Clean up on error
       cleanupLogCollectionState(deviceName, true);
       emitLogError(deviceName, "Failed to start log collection");
@@ -3821,7 +3821,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     try {
       int totalPulses = deviceTargetPulses.getOrDefault(deviceName, 0);
 
-      android.util.Log.i(TAG, "🚀 THROTTLED QUEUE: Scheduling log commands with " + LOG_COMMAND_INTERVAL_MS + "ms delays for " + totalPulses + " pulses");
+      AmpaLog.i(TAG, "🚀 THROTTLED QUEUE: Scheduling log commands with " + LOG_COMMAND_INTERVAL_MS + "ms delays for " + totalPulses + " pulses");
 
       // Mark as collecting (but NOT waiting for individual responses)
       deviceWaitingForResponse.put(deviceName, false);
@@ -3855,18 +3855,18 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       int totalCommands = (int) Math.ceil((double) totalPulses / MAX_PULSES_PER_FETCH);
       int allCommandsSentTime = totalCommands * LOG_COMMAND_INTERVAL_MS; // 200ms per command
 
-      android.util.Log.i(TAG, "⏱️ Scheduled " + totalCommands + " commands (will send over ~" +
+      AmpaLog.i(TAG, "⏱️ Scheduled " + totalCommands + " commands (will send over ~" +
                         allCommandsSentTime + "ms)");
-      android.util.Log.i(TAG, "⏱️ Inactivity-based completion: 10s after last ACK (resets on each ACK)");
-      android.util.Log.i(TAG, "⏱️ Absolute safety timeout: " + (ABSOLUTE_TIMEOUT_MS/60000) + " minutes");
+      AmpaLog.i(TAG, "⏱️ Inactivity-based completion: 10s after last ACK (resets on each ACK)");
+      AmpaLog.i(TAG, "⏱️ Absolute safety timeout: " + (ABSOLUTE_TIMEOUT_MS/60000) + " minutes");
 
       // Schedule ABSOLUTE timeout (only triggers if JS never sends ANY ACKs - crash before first ACK)
       Runnable absoluteTimeoutRunnable = () -> {
-        android.util.Log.w(TAG, "⏱️ ABSOLUTE TIMEOUT: 2 minutes reached with no completion, forcing finish");
+        AmpaLog.w(TAG, "⏱️ ABSOLUTE TIMEOUT: 2 minutes reached with no completion, forcing finish");
         int sent = devicePulseBatchesSent.getOrDefault(deviceName, 0);
         int acked = devicePulseBatchesAcked.getOrDefault(deviceName, 0);
-        android.util.Log.w(TAG, "⏱️ Final ACK status: " + acked + "/" + sent + " batches acknowledged");
-        android.util.Log.w(TAG, "⚠️ This is a safety fallback - indicates severe JS processing failure");
+        AmpaLog.w(TAG, "⏱️ Final ACK status: " + acked + "/" + sent + " batches acknowledged");
+        AmpaLog.w(TAG, "⚠️ This is a safety fallback - indicates severe JS processing failure");
         completeLogCollection(deviceName);
       };
 
@@ -3874,7 +3874,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       timeoutHandler.postDelayed(absoluteTimeoutRunnable, ABSOLUTE_TIMEOUT_MS);
 
     } catch (Exception e) {
-      android.util.Log.e(TAG, "❌ ERROR: Exception in throttled queue log read: " + e.getMessage());
+      AmpaLog.e(TAG, "❌ ERROR: Exception in throttled queue log read: " + e.getMessage());
       emitLogError(deviceName, "Failed to start log collection");
       cleanupLogCollectionState(deviceName, true);
     }
@@ -3969,7 +3969,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
     // Create new inactivity timer (10 seconds)
     Runnable inactivityTimer = () -> {
-      android.util.Log.w(TAG, "⏱️ INACTIVITY TIMEOUT: No ACKs received for 10 seconds");
+      AmpaLog.w(TAG, "⏱️ INACTIVITY TIMEOUT: No ACKs received for 10 seconds");
 
       // Diagnostic logging
       int sent = devicePulseBatchesSent.getOrDefault(deviceName, 0);
@@ -3978,23 +3978,23 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       Set<Integer> seenPulses = deviceSeenPulseNumbers.get(deviceName);
       int actualPulseCount = (seenPulses != null) ? seenPulses.size() : 0;
 
-      android.util.Log.w(TAG, "⏱️ Final status: " + actualPulseCount + "/" + targetPulses +
+      AmpaLog.w(TAG, "⏱️ Final status: " + actualPulseCount + "/" + targetPulses +
                         " pulses collected, " + acked + "/" + sent + " batches acknowledged");
 
       // Check if data is incomplete and attempt retry before completing
       if (targetPulses != null && actualPulseCount < targetPulses) {
-        android.util.Log.w(TAG, "⏱️ Incomplete data detected (" + actualPulseCount + "/" + targetPulses +
+        AmpaLog.w(TAG, "⏱️ Incomplete data detected (" + actualPulseCount + "/" + targetPulses +
                           "), attempting retry from timeout path");
 
         if (tryRetryMissingBatches(deviceName, seenPulses, targetPulses)) {
-          android.util.Log.i(TAG, "🔄 Retry initiated from inactivity timeout path");
+          AmpaLog.i(TAG, "🔄 Retry initiated from inactivity timeout path");
           return; // Exit without completing - wait for retry results
         } else {
-          android.util.Log.w(TAG, "⏱️ Retry not possible or already attempted, completing with incomplete data");
+          AmpaLog.w(TAG, "⏱️ Retry not possible or already attempted, completing with incomplete data");
         }
       }
 
-      android.util.Log.w(TAG, "⏱️ Completing log collection after inactivity timeout");
+      AmpaLog.w(TAG, "⏱️ Completing log collection after inactivity timeout");
       completeLogCollection(deviceName);
     };
 
@@ -4018,7 +4018,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // This prevents completion logic from running after user cancels, which would
     // trigger unwanted upload modal on wrong screen
     if (!deviceLoggingActive.getOrDefault(deviceName, false)) {
-      android.util.Log.i(TAG, "⏭️ SKIP completion check - collection was cancelled for: " + deviceName);
+      AmpaLog.i(TAG, "⏭️ SKIP completion check - collection was cancelled for: " + deviceName);
       return;
     }
 
@@ -4046,7 +4046,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // This caused premature completion with only 7/1800 pulses (batch #1 only)
     if (sent >= expectedBatches && acked >= expectedBatches) {
       // ✅ All expected batches sent AND acknowledged by JS
-      android.util.Log.i(TAG, "✅ ACK-driven completion: All " + expectedBatches + " batches sent and acknowledged, " +
+      AmpaLog.i(TAG, "✅ ACK-driven completion: All " + expectedBatches + " batches sent and acknowledged, " +
                         actualPulseCount + " pulses collected");
 
       // Cancel timeout timer since we're completing via ACK
@@ -4054,7 +4054,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       Runnable timeoutRunnable = deviceCompletionTimeoutRunnables.remove(deviceName);
       if (timeoutRunnable != null) {
         timeoutHandler.removeCallbacks(timeoutRunnable);
-        android.util.Log.d(TAG, "⏱️ Cancelled timeout timer (ACK-driven completion)");
+        AmpaLog.d(TAG, "⏱️ Cancelled timeout timer (ACK-driven completion)");
       }
 
       // Check if we have 100% complete data
@@ -4062,11 +4062,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
       if (completeness == 100.0) {
         // Perfect! Complete immediately
-        android.util.Log.i(TAG, "✅ 100% complete data - finishing now");
+        AmpaLog.i(TAG, "✅ 100% complete data - finishing now");
         completeLogCollection(deviceName);
       } else {
         // We got all ACKs but data is incomplete - try retry
-        android.util.Log.w(TAG, "⚠️ All ACKs received but only " +
+        AmpaLog.w(TAG, "⚠️ All ACKs received but only " +
                           String.format("%.1f", completeness) + "% data (" +
                           actualPulseCount + "/" + targetPulses + " pulses)");
 
@@ -4074,11 +4074,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           // Retry initiated - let ACK system handle completion naturally
           // If retry batches arrive → ACKs → inactivity timer resets → eventually completes
           // If retry batches don't arrive → no ACKs → inactivity timer fires → completes
-          android.util.Log.i(TAG, "🔄 Retry initiated - will complete via inactivity timer");
+          AmpaLog.i(TAG, "🔄 Retry initiated - will complete via inactivity timer");
           // Don't call completeLogCollection() here - let timer system handle it
         } else {
           // No retry possible/needed - complete now
-          android.util.Log.i(TAG, "⏭️ No retry possible - completing with incomplete data");
+          AmpaLog.i(TAG, "⏭️ No retry possible - completing with incomplete data");
           completeLogCollection(deviceName);
         }
       }
@@ -4103,19 +4103,19 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     try {
       // Verify collection still active
       if (!deviceLoggingActive.getOrDefault(deviceName, false)) {
-        android.util.Log.d(TAG, "⏭️ Retry skipped - collection no longer active");
+        AmpaLog.d(TAG, "⏭️ Retry skipped - collection no longer active");
         return false;
       }
 
       // Check retry count
       int retryCount = deviceRetryCount.getOrDefault(deviceName, 0);
       if (retryCount >= MAX_RETRY_ATTEMPTS) {
-        android.util.Log.d(TAG, "⏭️ Retry skipped - max retries (" + MAX_RETRY_ATTEMPTS + ") reached");
+        AmpaLog.d(TAG, "⏭️ Retry skipped - max retries (" + MAX_RETRY_ATTEMPTS + ") reached");
         return false;
       }
 
       if (seenPulses == null || targetPulses == null || targetPulses == 0) {
-        android.util.Log.w(TAG, "⚠️ Retry skipped - invalid pulse data");
+        AmpaLog.w(TAG, "⚠️ Retry skipped - invalid pulse data");
         return false;
       }
 
@@ -4123,21 +4123,21 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       List<Integer> missingBatches = findMissingBatchIndices(seenPulses, targetPulses);
 
       if (missingBatches.isEmpty()) {
-        android.util.Log.w(TAG, "⚠️ No specific missing batches identified");
+        AmpaLog.w(TAG, "⚠️ No specific missing batches identified");
         return false;
       }
 
       // Safety: Don't retry if too many missing (>30% indicates hardware failure)
       int totalBatches = (int) Math.ceil((double) targetPulses / MAX_PULSES_PER_FETCH);
       if (missingBatches.size() > totalBatches * 0.3) {
-        android.util.Log.e(TAG, "❌ Too many missing batches (" +
+        AmpaLog.e(TAG, "❌ Too many missing batches (" +
                           missingBatches.size() + "/" + totalBatches + " = " +
                           String.format("%.1f", (missingBatches.size() * 100.0 / totalBatches)) +
                           "%) - likely hardware failure, not retrying");
         return false;
       }
 
-      android.util.Log.w(TAG, "🔄 RETRY #" + (retryCount + 1) + ": Re-requesting " +
+      AmpaLog.w(TAG, "🔄 RETRY #" + (retryCount + 1) + ": Re-requesting " +
                         missingBatches.size() + " missing batch(es)");
 
       // Increment retry counter
@@ -4159,14 +4159,14 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       }
 
       int totalRetryTime = missingBatches.size() * LOG_COMMAND_INTERVAL_MS;
-      android.util.Log.i(TAG, "⏱️ Retry scheduled: " + missingBatches.size() +
+      AmpaLog.i(TAG, "⏱️ Retry scheduled: " + missingBatches.size() +
                         " commands over ~" + totalRetryTime + "ms");
-      android.util.Log.i(TAG, "⏱️ Inactivity timer will fire if no ACKs within 10s of last retry response");
+      AmpaLog.i(TAG, "⏱️ Inactivity timer will fire if no ACKs within 10s of last retry response");
 
       return true; // Retry initiated
 
     } catch (Exception e) {
-      android.util.Log.e(TAG, "❌ Retry error: " + e.getMessage());
+      AmpaLog.e(TAG, "❌ Retry error: " + e.getMessage());
       return false; // On error, don't retry
     }
   }
@@ -4202,7 +4202,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       }
     }
 
-    android.util.Log.i(TAG, "📊 Gap analysis: " + missingBatches.size() +
+    AmpaLog.i(TAG, "📊 Gap analysis: " + missingBatches.size() +
                       " missing batch(es) out of " +
                       ((totalPulses + MAX_PULSES_PER_FETCH - 1) / MAX_PULSES_PER_FETCH) + " total");
 
@@ -4261,14 +4261,14 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         // Check if we can complete now that this batch is ACKed
         checkLogCollectionCompletion(heartbeatDevice);
       } else if (batchSequence <= currentAck) {
-        android.util.Log.w(TAG, "⚠️ Duplicate ACK: batch #" + batchSequence +
+        AmpaLog.w(TAG, "⚠️ Duplicate ACK: batch #" + batchSequence +
                           " (already at #" + currentAck + ")");
       } else {
-        android.util.Log.w(TAG, "⚠️ Out-of-order ACK: got #" + batchSequence +
+        AmpaLog.w(TAG, "⚠️ Out-of-order ACK: got #" + batchSequence +
                           ", expected #" + (currentAck + 1));
       }
     } catch (Exception e) {
-      android.util.Log.e(TAG, "❌ Error processing ACK for batch #" + batchSequence + ": " + e.getMessage());
+      AmpaLog.e(TAG, "❌ Error processing ACK for batch #" + batchSequence + ": " + e.getMessage());
     }
   }
 
@@ -4277,12 +4277,12 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   private void completeLogCollection(String deviceName) {
     try {
-      android.util.Log.i(TAG, "✅ COMPLETE: Log collection finished for: " + deviceName);
+      AmpaLog.i(TAG, "✅ COMPLETE: Log collection finished for: " + deviceName);
 
       // Log final ACK statistics
       int sent = devicePulseBatchesSent.getOrDefault(deviceName, 0);
       int acked = devicePulseBatchesAcked.getOrDefault(deviceName, 0);
-      android.util.Log.i(TAG, "📊 Batch stats: " + acked + "/" + sent + " acknowledged by JS");
+      AmpaLog.i(TAG, "📊 Batch stats: " + acked + "/" + sent + " acknowledged by JS");
 
       // Get final counts for completion event
       int currentIndex = deviceLogIndex.getOrDefault(deviceName, 0);
@@ -4294,7 +4294,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // After Fix #2: deviceLogIndex should equal seenPulses.size() and totalPulses
       Set<Integer> finalSeenPulses = deviceSeenPulseNumbers.get(deviceName);
       int actualPulseCount = (finalSeenPulses != null) ? finalSeenPulses.size() : 0;
-      android.util.Log.i(TAG, "📊 Completion counts: deviceLogIndex=" + currentIndex +
+      AmpaLog.i(TAG, "📊 Completion counts: deviceLogIndex=" + currentIndex +
                         ", seenPulses.size=" + actualPulseCount +
                         ", targetPulses=" + totalPulses);
 
@@ -4307,13 +4307,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       }
 
       if (hasIncompleteData) {
-        android.util.Log.e(TAG, "❌ INCOMPLETE DATA DETECTED: " + actualPulseCount + "/" +
+        AmpaLog.e(TAG, "❌ INCOMPLETE DATA DETECTED: " + actualPulseCount + "/" +
                           totalPulses + " pulses (" + String.format("%.1f", completeness) + "%)");
       }
 
       // Alert if counts don't match (indicates Fix #2 isn't working or incomplete collection)
       if (currentIndex != actualPulseCount || currentIndex != totalPulses) {
-        android.util.Log.e(TAG, "❌ MISMATCH DETECTED: deviceLogIndex=" + currentIndex +
+        AmpaLog.e(TAG, "❌ MISMATCH DETECTED: deviceLogIndex=" + currentIndex +
                           ", seenPulses=" + actualPulseCount +
                           ", targetPulses=" + totalPulses +
                           " (should all be equal!)");
@@ -4345,13 +4345,13 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // CRITICAL: Clear pulse tracking (clearPulseTracking=true) on successful completion
       // This resets deduplication state for next treatment session
       cleanupLogCollectionState(deviceName, true, true);
-      android.util.Log.i(TAG, "✅ COMPLETE: Heartbeat resumed immediately to prevent USB timeout");
+      AmpaLog.i(TAG, "✅ COMPLETE: Heartbeat resumed immediately to prevent USB timeout");
 
       // THEN send reset command (goes through queue normally after heartbeat active)
       nativeResetDeviceLog(deviceName);
 
     } catch (Exception e) {
-      android.util.Log.e(TAG, "❌ COMPLETE: Error: " + e.getMessage());
+      AmpaLog.e(TAG, "❌ COMPLETE: Error: " + e.getMessage());
       // Force cleanup with pulse tracking clear
       cleanupLogCollectionState(deviceName, true, true);
     }
@@ -4363,7 +4363,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
    */
   private void nativeResetDeviceLog(String deviceName) {
     try {
-      android.util.Log.i(TAG, "Resetting device log buffer for: " + deviceName);
+      AmpaLog.i(TAG, "Resetting device log buffer for: " + deviceName);
 
       // Build reset command: [WRITE_CMD, ADDRESS_3_BYTES, SIZE_1_BYTE, RESET_VALUE_1_BYTE]
       byte[] command = new byte[6];
@@ -4379,9 +4379,9 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
 
       // Send reset command to device
       writeSerialportBytes(deviceName, command);
-      android.util.Log.i(TAG, "Device log reset command sent successfully to: " + deviceName);
+      AmpaLog.i(TAG, "Device log reset command sent successfully to: " + deviceName);
     } catch (Exception e) {
-      android.util.Log.e(TAG, "Error resetting device log for " + deviceName + ": " + e.getMessage());
+      AmpaLog.e(TAG, "Error resetting device log for " + deviceName + ": " + e.getMessage());
     }
   }
 
@@ -4393,10 +4393,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   public void resetDeviceLog() {
     if (heartbeatDevice == null) return;
     try {
-      android.util.Log.i(TAG, "Manual device log reset requested for: " + heartbeatDevice);
+      AmpaLog.i(TAG, "Manual device log reset requested for: " + heartbeatDevice);
       nativeResetDeviceLog(heartbeatDevice);
     } catch (Exception e) {
-      android.util.Log.e(TAG, "Error resetting device log: " + e.getMessage());
+      AmpaLog.e(TAG, "Error resetting device log: " + e.getMessage());
     }
   }
 
@@ -4419,7 +4419,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       eventEmit("onNativeLogStatusChange", startParams);
 
       if (lastPulseIndex <= 0) {
-        android.util.Log.w(TAG, "Manual log collection - no pulses available for: " + heartbeatDevice + ", emitting immediate completion event");
+        AmpaLog.w(TAG, "Manual log collection - no pulses available for: " + heartbeatDevice + ", emitting immediate completion event");
         // Emit completion event immediately after START for 0 pulses
         WritableMap completeParams = Arguments.createMap();
         completeParams.putString("deviceName", heartbeatDevice);
@@ -4431,11 +4431,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
         return;
       }
 
-      android.util.Log.i(TAG, "Manual log collection requested for: " + heartbeatDevice + " with " + lastPulseIndex + " pulses");
+      AmpaLog.i(TAG, "Manual log collection requested for: " + heartbeatDevice + " with " + lastPulseIndex + " pulses");
 
       autoStartLogCollection(heartbeatDevice, lastPulseIndex);
     } catch (Exception e) {
-      android.util.Log.e(TAG, "Error in manual log collection: " + e.getMessage());
+      AmpaLog.e(TAG, "Error in manual log collection: " + e.getMessage());
       emitLogError(heartbeatDevice, "Failed to start manual log collection");
     }
   }
@@ -4448,7 +4448,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   @ReactMethod
   public void suppressNextLogCollection() {
     if (heartbeatDevice == null) return;
-    android.util.Log.i(TAG, "🚫 suppressNextLogCollection set for: " + heartbeatDevice);
+    AmpaLog.i(TAG, "🚫 suppressNextLogCollection set for: " + heartbeatDevice);
     deviceSuppressNextLogCollection.put(heartbeatDevice, true);
   }
 
@@ -4459,11 +4459,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   public void stopNativeLogging() {
     if (heartbeatDevice == null) return;
     try {
-      android.util.Log.i(TAG, "🛑 CANCEL: Stopping log collection for: " + heartbeatDevice);
+      AmpaLog.i(TAG, "🛑 CANCEL: Stopping log collection for: " + heartbeatDevice);
 
       // Check if actually collecting for this device
       if (!deviceLoggingActive.getOrDefault(heartbeatDevice, false)) {
-        android.util.Log.w(TAG, "⚠️ CANCEL: No active collection for: " + heartbeatDevice);
+        AmpaLog.w(TAG, "⚠️ CANCEL: No active collection for: " + heartbeatDevice);
         return;
       }
 
@@ -4481,10 +4481,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       // Reset device log buffer to prevent stale data
       nativeResetDeviceLog(heartbeatDevice);
 
-      android.util.Log.i(TAG, "✅ CANCEL: Log collection stopped, device log reset, and heartbeat resumed");
+      AmpaLog.i(TAG, "✅ CANCEL: Log collection stopped, device log reset, and heartbeat resumed");
 
     } catch (Exception e) {
-      android.util.Log.e(TAG, "❌ CANCEL: Error stopping log collection: " + e.getMessage());
+      AmpaLog.e(TAG, "❌ CANCEL: Error stopping log collection: " + e.getMessage());
       // Force cleanup even on error with pulse tracking clear
       cleanupLogCollectionState(heartbeatDevice, true, true);
     }
@@ -4497,7 +4497,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
             autoRampEngine.loadTimeline(heartbeatDevice, timelineData, targetMaxPercent);
             promise.resolve(true);
         } catch (Exception e) {
-            android.util.Log.e(TAG, "Failed to load auto-ramp timeline: " + e.getMessage(), e);
+            AmpaLog.e(TAG, "Failed to load auto-ramp timeline: " + e.getMessage(), e);
             promise.reject("AUTO_RAMP_ERROR", "Failed to load timeline: " + e.getMessage(), e);
         }
     }
@@ -4523,7 +4523,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     @ReactMethod
     public void resetTimestampValidator() {
         timestampValidator.clear();
-        android.util.Log.i(TAG, "TIMESTAMP_VALIDATOR: Cleared by JS (sequence repeat)");
+        AmpaLog.i(TAG, "TIMESTAMP_VALIDATOR: Cleared by JS (sequence repeat)");
     }
 
   /**

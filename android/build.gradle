@@ -41,6 +41,7 @@ dependencies {
     implementation 'com.google.guava:guava:31.0.1-jre' // Check for the latest version if needed
     implementation 'com.facebook.react:react-native:+'
     implementation project(':native-port')
+    implementation 'org.slf4j:slf4j-api:1.7.33'
 
     // You may want to replace this with the latest usbserial library if you have a newer version:
     // implementation files('libs/usbserial-6.0.5-release.aar') 
