@@ -4163,6 +4163,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
                         " commands over ~" + totalRetryTime + "ms");
       AmpaLog.i(TAG, "⏱️ Inactivity timer will fire if no ACKs within 10s of last retry response");
 
+      // Re-arm now: both callers leave no pending timer (one is the timer that just fired, the
+      // other cancelled it), so if every retry response is lost again nothing would ever complete.
+      resetInactivityTimer(deviceName);
+
       return true; // Retry initiated
 
     } catch (Exception e) {
