@@ -2465,70 +2465,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       playParams.putInt("playingTreatmentIndex", deviceStatus.playingTreatmentIndex);
       eventEmit("onNativePlayStatus", playParams);
 
-      // PHASE 1: Auto-resume validation for device reconnection during log collection
-      // CRITICAL FIX: Don't check device name equality because USB hub path changes
-      // (e.g., /dev/bus/usb/001/012 -> /dev/bus/usb/001/016) during reconnection.
-      // Instead, rely on wasCollectingLogs flag and pulse index validation.
-      if (wasCollectingLogs) {
-        AmpaLog.i(TAG, "🔄 Auto-resume validation: Device reconnected during log collection: " + deviceName +
-                          " (original device was: " + lastCollectionDevice + ")");
-
-        // Validate device memory state using lastPulseIndex
-        if (deviceStatus.lastPulseIndex == lastExpectedPulseIndex && lastExpectedPulseIndex > 0) {
-          AmpaLog.i(TAG, "✅ Auto-resume validation PASSED: lastPulseIndex matches (" +
-                            deviceStatus.lastPulseIndex + "), resuming log collection");
-
-          // Cancel validation timeout for BOTH old and new device names
-          Runnable timeoutRunnable = deviceValidationTimeouts.remove(lastCollectionDevice);
-          if (timeoutRunnable != null) {
-            timeoutHandler.removeCallbacks(timeoutRunnable);
-          }
-          timeoutRunnable = deviceValidationTimeouts.remove(deviceName);
-          if (timeoutRunnable != null) {
-            timeoutHandler.removeCallbacks(timeoutRunnable);
-          }
-
-          // Clear auto-resume state
-          wasCollectingLogs = false;
-          String originalDevice = lastCollectionDevice; // Save for logging
-          lastCollectionDevice = null;
-          lastExpectedPulseIndex = 0;
-
-          AmpaLog.i(TAG, "🔄 Resuming log collection: " + originalDevice + " -> " + deviceName);
-
-          // Resume log collection from where we left off
-          autoStartLogCollection(deviceName, deviceStatus.lastPulseIndex);
-        } else {
-          // Validation FAILED - device memory doesn't match expected state
-          AmpaLog.e(TAG, "❌ Auto-resume validation FAILED: Expected lastPulseIndex=" +
-                            lastExpectedPulseIndex + ", actual=" + deviceStatus.lastPulseIndex +
-                            " (device path changed: " + lastCollectionDevice + " -> " + deviceName + ")");
-
-          // Emit reconnect failed event
-          WritableMap failParams = Arguments.createMap();
-          failParams.putString("deviceName", deviceName);
-          failParams.putInt("expectedPulseIndex", lastExpectedPulseIndex);
-          failParams.putInt("actualPulseIndex", deviceStatus.lastPulseIndex);
-          failParams.putString("reason", "pulse_index_mismatch");
-          eventEmit("onLogCollectionReconnectFailed", failParams);
-
-          // Clear auto-resume state
-          wasCollectingLogs = false;
-          lastCollectionDevice = null;
-          lastExpectedPulseIndex = 0;
-
-          // Cancel validation timeout for BOTH old and new device names
-          Runnable timeoutRunnable = deviceValidationTimeouts.remove(lastCollectionDevice);
-          if (timeoutRunnable != null) {
-            timeoutHandler.removeCallbacks(timeoutRunnable);
-          }
-          timeoutRunnable = deviceValidationTimeouts.remove(deviceName);
-          if (timeoutRunnable != null) {
-            timeoutHandler.removeCallbacks(timeoutRunnable);
-          }
-        }
-      }
-
       // Auto-start log collection when treatment completes (treatmentStatus = 0)
       // ✅ FIXED: Only trigger on PLAYING(1)/PAUSED(2) → IDLE(0) transition
       // ✅ FIXED: Only auto-start for TREATMENT mode, not MAPPING/MANUAL modes
@@ -3462,113 +3398,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     return smoothedTemp;
   }
 
-  private static boolean validateDataPacket(byte[] data, int expectedLength) {
-    if (data == null || data.length < expectedLength) {
-      return false;
-    }
-
-    // Skip temperature range checks - accept all packets with valid length
-    return true;
-  }
-
-  /**
-   * Native enhanced read data processing with structured events
-   */
-  @ReactMethod
-  public void processNativeReadData(String deviceName, ReadableArray rawData) {
-    try {
-      // Convert ReadableArray to byte array
-      byte[] data = new byte[rawData.size()];
-      for (int i = 0; i < rawData.size(); i++) {
-        data[i] = (byte) rawData.getInt(i);
-      }
-
-      // Validate packet integrity - temporarily accept 56 bytes for debugging
-      if (!validateDataPacket(data, 56)) {
-        android.util.Log.w(TAG, "Invalid data packet received - insufficient length or disconnected coil");
-        return;
-      }
-
-      // Log packet details for debugging
-      if (data.length != 63) {
-        android.util.Log.i(TAG, "Processing packet with " + data.length + " bytes (expected 63)");
-      }
-
-      // Parse device status using native data structure with temperature smoothing
-      DeviceStatusData deviceStatus = new DeviceStatusData(data, deviceName, temperatureCache);
-
-      // Run packet integrity validation
-      PacketIntegrityValidator.Result integrityResult = packetIntegrityValidator.validate(data);
-
-      // If integrity failed: emit event for JS logging, then bail out
-      if (integrityResult.failed) {
-        WritableMap statusParams = Arguments.createMap();
-        statusParams.putString("deviceName", deviceName);
-        statusParams.putString("eventType", "DEVICE_STATUS");
-        WritableMap dataMap = deviceStatus.toWritableMap();
-        dataMap.putInt("integrityScore", integrityResult.score);
-        dataMap.putBoolean("integrityFailed", integrityResult.failed);
-        dataMap.putString("integrityViolations", integrityResult.violations);
-        statusParams.putMap("data", dataMap);
-        eventEmit("onNativeDeviceStatus", statusParams);
-        return;
-      }
-
-      // Emit structured device status event
-      WritableMap statusParams = Arguments.createMap();
-      statusParams.putString("deviceName", deviceName);
-      statusParams.putString("eventType", "DEVICE_STATUS");
-      WritableMap dataMap = deviceStatus.toWritableMap();
-
-      // Validate timestamp against sliding window before emitting to JS
-      long validatedTimestamp = timestampValidator.validate(deviceStatus.timestamp, deviceStatus.treatmentStatus);
-      if (validatedTimestamp >= 0) {
-        dataMap.putDouble("timestamp", validatedTimestamp);
-      }
-
-      // Add integrity check results to the existing data map
-      dataMap.putInt("integrityScore", integrityResult.score);
-      dataMap.putBoolean("integrityFailed", integrityResult.failed);
-      dataMap.putString("integrityViolations", integrityResult.violations);
-
-      statusParams.putMap("data", dataMap);
-      eventEmit("onNativeDeviceStatus", statusParams);
-
-      // Auto-ramp: check timeline keyframes; emit if a manual override was detected
-      boolean autoRampOverride = autoRampEngine.checkAndApply(deviceName, deviceStatus.timestamp, deviceStatus.treatmentStatus, deviceStatus.mso, deviceStatus.lastPulseIndex, deviceStatus.trainsInSequence);
-      if (autoRampOverride) {
-        WritableMap overrideParams = Arguments.createMap();
-        overrideParams.putString("deviceName", deviceName);
-        eventEmit("onAutoRampManualOverride", overrideParams);
-      }
-
-      // Extract and emit power status if changed
-      WritableMap powerParams = Arguments.createMap();
-      powerParams.putString("deviceName", deviceName);
-      powerParams.putString("eventType", "POWER_STATUS");
-      powerParams.putBoolean("pulseGeneratorOn", deviceStatus.pulseGeneratorOn);
-      powerParams.putInt("voltage", deviceStatus.voltage);
-      powerParams.putDouble("chargeVoltage", deviceStatus.chargeVoltage);
-      eventEmit("onNativePowerStatus", powerParams);
-
-      // Play status, MSO status, and error states are now included in onNativeDeviceStatus and processed in JS
-      // This eliminates duplicate events and ensures single source of truth
-      // All processing occurs in NativeReadBridge.handleDeviceStatus()
-
-      android.util.Log.d(TAG, "Native read data processing completed for device: " + deviceName);
-
-    } catch (Exception e) {
-      android.util.Log.e(TAG, "Error processing native read data: " + e.getMessage(), e);
-
-      // Emit error event
-      WritableMap errorParams = Arguments.createMap();
-      errorParams.putString("deviceName", deviceName);
-      errorParams.putString("eventType", "PROCESSING_ERROR");
-      errorParams.putString("error", e.getMessage());
-      eventEmit("onNativeProcessingError", errorParams);
-    }
-  }
-
   ///////////////////////////////////////////////Native Log Export API /////////////////////////////////////////////////////////
   ///////////////////////////////////////////////Native Log Export API /////////////////////////////////////////////////////////
 
@@ -3592,10 +3421,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   private volatile int lastProcessedPulseIndex = -1;
 
   // Native-only acknowledgment system for duplicate prevention
-  private final Map<String, Boolean> deviceWaitingForResponse = new ConcurrentHashMap<>();
-  private final Map<String, Integer> deviceExpectedPulseCount = new ConcurrentHashMap<>();
   private final Map<String, Integer> deviceRetryCount = new ConcurrentHashMap<>();
-  private final Map<String, Runnable> deviceTimeoutHandlers = new ConcurrentHashMap<>();
   // LOG_READ_TIMEOUT_MS moved to timing constants section at top of file (line 162)
 
   // Retry mechanism for missing batches
@@ -3616,15 +3442,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   // CRITICAL: Global log collection state for heartbeat management
   private volatile boolean isCollectingLogs = false;
   private volatile String logCollectionDevice = null;
-
-  // Auto-resume state tracking for device reconnection during log collection
-  private volatile boolean wasCollectingLogs = false;
-  private volatile String lastCollectionDevice = null;
-  private volatile int lastExpectedPulseIndex = 0;
-
-  // Auto-resume validation constants
-  private static final int VALIDATION_TIMEOUT_MS = 3000; // 3 seconds for validation
-  private final Map<String, Runnable> deviceValidationTimeouts = new ConcurrentHashMap<>();
 
   /**
    * Helper method to convert number to three-byte array for memory addressing
@@ -3669,8 +3486,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       deviceLoggingActive.put(deviceName, false);
       deviceLogIndex.remove(deviceName);
       deviceTargetPulses.remove(deviceName);
-      deviceWaitingForResponse.remove(deviceName);
-      deviceExpectedPulseCount.remove(deviceName);
       deviceRetryCount.remove(deviceName);
 
       // CRITICAL: Only clear pulse tracking when treatment is finished or manually cancelled
@@ -3705,20 +3520,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       if (buffer != null) {
         buffer.clear();
         android.util.Log.d(TAG, "🧹 Cleared packet buffer for device: " + deviceName);
-      }
-
-      // Cancel any pending timeout handlers
-      Runnable timeoutRunnable = deviceTimeoutHandlers.remove(deviceName);
-      if (timeoutRunnable != null) {
-        timeoutHandler.removeCallbacks(timeoutRunnable);
-        android.util.Log.d(TAG, "🧹 Cancelled pending timeout handler");
-      }
-
-      // PHASE 1: Cancel validation timeout if present
-      Runnable validationTimeout = deviceValidationTimeouts.remove(deviceName);
-      if (validationTimeout != null) {
-        timeoutHandler.removeCallbacks(validationTimeout);
-        android.util.Log.d(TAG, "🧹 Cancelled validation timeout handler");
       }
 
       // PHASE 2: Cancel log collection completion timeout (inactivity/absolute timer)
@@ -3839,9 +3640,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       int totalPulses = deviceTargetPulses.getOrDefault(deviceName, 0);
 
       AmpaLog.i(TAG, "🚀 THROTTLED QUEUE: Scheduling log commands with " + LOG_COMMAND_INTERVAL_MS + "ms delays for " + totalPulses + " pulses");
-
-      // Mark as collecting (but NOT waiting for individual responses)
-      deviceWaitingForResponse.put(deviceName, false);
 
       int currentIndex = 0;
       int commandIndex = 0;

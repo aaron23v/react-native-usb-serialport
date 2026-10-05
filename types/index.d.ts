@@ -361,15 +361,6 @@ interface RNSerialportStatic {
 
   // ============== Native Data Processing Methods ==============
 
-  /**
-   * Process native read data with enhanced parsing and structured events
-   *
-   * @param {string} deviceName The name of the device
-   * @param {number[]} rawData The raw data array from device
-   * @memberof RNSerialportStatic
-   */
-  processNativeReadData(deviceName: string, rawData: number[]): void;
-
   // All read command methods removed - redundant with heartbeat command
   // processNativeHardwarePulses removed - caused duplicate pulse emissions
 
