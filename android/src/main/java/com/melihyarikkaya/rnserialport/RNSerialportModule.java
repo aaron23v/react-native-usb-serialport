@@ -163,6 +163,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     private static final int MAX_RETRIES = 3;
     private static final int MAX_QUEUE_SIZE = 10;
     private static final int HEARTBEAT_INTERVAL_MS = 250;  // Heartbeat every 250ms
+    private static final int LOG_READ_REPLY_GUARD_MS = 150;  // No heartbeat this soon after a log-read TX (reply takes ~40ms)
+    private static final int RX_QUIET_BEFORE_CLEAR_MS = 100;  // RX buffer is only "stale" after this long without bytes
+    private volatile long lastLogReadTxMs = 0;
+    private volatile long lastRxMs = 0;
     private static final int CLEANUP_TIMEOUT_SECONDS = 5;  // Cleanup timeout in seconds
 
     // Log Collection Timeout Constants
@@ -820,11 +824,12 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
 
     // Drop any orphan bytes from the previous response window before issuing a new request.
-    // In normal operation the buffer is empty here (response was extracted ~30ms after prev TX,
-    // 220ms before this TX). Non-empty means a truncated/aborted prior response left orphans;
-    // appending the new response to those orphans causes cross-frame extraction (cascade bug).
+    // Non-empty means a truncated/aborted prior response left orphans; appending the new
+    // response to those orphans causes cross-frame extraction (cascade bug). Only clear once
+    // RX has gone quiet: the queue can fire 50ms after the previous TX, while that reply is
+    // still arriving, and clearing then wipes it (lost log-read batches).
     NativePacketBuffer staleBuffer = devicePacketBuffers.get(deviceName);
-    if (staleBuffer != null) {
+    if (staleBuffer != null && android.os.SystemClock.uptimeMillis() - lastRxMs > RX_QUIET_BEFORE_CLEAR_MS) {
       staleBuffer.clear();
     }
 
@@ -1073,6 +1078,7 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
             if (bytes.length == 0) {
               return;
             }
+            lastRxMs = android.os.SystemClock.uptimeMillis();
 
             android.util.Log.i(TAG, "[RX] " + bytes.length + " bytes: " + Definitions.bytesToHex(bytes));
 
@@ -1573,6 +1579,17 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     CommandItem item = nativeQueue.poll();
     if (item == null) {
       return; // Queue is empty
+    }
+
+    // A heartbeat sent one tick after a log read lands while the ~247-byte log reply is still
+    // arriving, and that batch is lost. Skip it: log reads every 200ms keep the PG alive, and
+    // heartbeats resume within one interval once reads stop.
+    long now = android.os.SystemClock.uptimeMillis();
+    if ("heartbeat".equals(item.functionCaller) && now - lastLogReadTxMs < LOG_READ_REPLY_GUARD_MS) {
+      return;
+    }
+    if (item.functionCaller != null && item.functionCaller.startsWith("log-read-")) {
+      lastLogReadTxMs = now;
     }
 
     isProcessing = true;
@@ -4381,9 +4398,10 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       command[4] = (byte) 0x01; // Size: 1 byte
       command[5] = (byte) 0x01; // Reset value: 1
 
-      // Send reset command to device
-      writeSerialportBytes(deviceName, command);
-      AmpaLog.i(TAG, "Device log reset command sent successfully to: " + deviceName);
+      // Queue it rather than writing directly, so it can't land on top of an in-flight reply.
+      // handleRetryTimeout deliberately never retries a log reset.
+      addToNativeQueue(deviceName, command, PRIORITY_FRONT, "reset-log", 0);
+      AmpaLog.i(TAG, "Device log reset command queued for: " + deviceName);
     } catch (Exception e) {
       AmpaLog.e(TAG, "Error resetting device log for " + deviceName + ": " + e.getMessage());
     }
