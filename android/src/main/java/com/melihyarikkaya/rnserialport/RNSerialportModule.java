@@ -26,23 +26,9 @@ import com.facebook.react.module.annotations.ReactModule;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 import com.facebook.react.bridge.WritableNativeArray;
 
-import android.annotation.SuppressLint;
 import android.content.Context;
-import android.net.ConnectivityManager;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
-import android.net.Network;
 import android.util.Base64;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
-import java.io.IOException;
-import java.net.Inet6Address;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
@@ -56,7 +42,6 @@ import java.text.SimpleDateFormat;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -64,7 +49,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -79,14 +63,11 @@ import com.felhr.usbserial.UsbSerialInterface;
 
 import com.google.common.primitives.UnsignedBytes;
 
-public class RNSerialportModule extends ReactContextBaseJavaModule implements LifecycleEventListener, TcpReceiverTask.OnDataReceivedListener {
+public class RNSerialportModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
     public static final String TAG = "RNSerialport";
     private static final int N_THREADS = 2;
     private static final int USB_PROCESSING_THREADS = 4; // Dedicated threads for USB packet processing
     public final ReactApplicationContext mReactContext;
-    private final ConcurrentHashMap<Integer, TcpSocket> socketMap = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Network> mNetworkMap = new ConcurrentHashMap<>();
-    private final CurrentNetwork currentNetwork = new CurrentNetwork();
     private final ExecutorService executorService = Executors.newFixedThreadPool(N_THREADS);
     // CRITICAL FIX: Dedicated thread pool for USB packet processing to prevent thread starvation
     // and ensure USB read callbacks remain non-blocking during high-frequency data collection
@@ -229,10 +210,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     // Per-device flag: suppress the next auto-log-collection trigger (set by JS before discard stop command)
     private final Map<String, Boolean> deviceSuppressNextLogCollection = new ConcurrentHashMap<>();
 
-    // Native gateway flags for legacy compatibility
-    private static boolean isNativeGateway = false;
-    private static boolean isNativeGatewayJsEventEmitOnSerialportData = false;
-
   // ref to
   // https://github.com/google/guava/blob/6405852bbf453b14d097b8ec3bcae494334b357d/android/guava/src/com/google/common/primitives/UnsignedBytes.java
   private static int unsignedByteToInt(byte value) {
@@ -289,8 +266,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
   private final Set<String> connectingDevices = ConcurrentHashMap.newKeySet();
     // Initialize auto-ramp engine with reference to serial ports
     private final AutoRampEngine autoRampEngine = new AutoRampEngine(serialPorts, crcEnabledByDevice);
-  public Map<Integer, String> appBus2DeviceName = new HashMap<>(); // App define which bus id match which deviceName
-  public Map<String, Integer> deviceName2SocketId = new HashMap<>();
 
   //Connection Settings
   private int DATA_BIT     = 9;
@@ -403,7 +378,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
           eventEmit(onDeviceDetachedEvent, deviceName);
           stopConnection(deviceName);
           serialPorts.remove(deviceName);
-          if (deviceName != null) appBus2DeviceName.values().removeIf(deviceName::equals);
           synchronized(mPermissionLock) {
               mHasPermission = false;
               mPermissionRequested = false;
@@ -780,7 +754,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       stopConnection(entry.getKey());
     }
     serialPorts.clear();
-    appBus2DeviceName.clear();
   }
 
   @ReactMethod
@@ -1203,351 +1176,11 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
       AmpaLog.e(TAG, "❌ stopConnection: Error closing USB connection (non-fatal): " + e.getMessage(), e);
     }
 
-    if (deviceName != null) appBus2DeviceName.values().removeIf(deviceName::equals);
 
     Intent intent = new Intent(ACTION_USB_DISCONNECTED);
     intent.putExtra(EXTRA_USB_DEVICE_NAME, deviceName);
     mReactContext.sendBroadcast(intent);
   }
-
-  ///////////////////////////////////////////////TCP Socket /////////////////////////////////////////////////////////
-  ///////////////////////////////////////////////TCP Socket /////////////////////////////////////////////////////////
-
-    private void sendEvent(String eventName, WritableMap params) {
-        mReactContext
-                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-                .emit(eventName, params);
-    }
-
-    /**
-     * Creates a TCP Socket and establish a connection with the given host
-     *
-     * @param cId     socket ID
-     * @param host    socket IP address
-     * @param port    socket port to be bound
-     * @param options extra options
-     */
-    @SuppressLint("StaticFieldLeak")
-    @SuppressWarnings("unused")
-    @ReactMethod
-    public void connect(@NonNull final Integer cId, @NonNull final String host, @NonNull final Integer port, @NonNull final ReadableMap options) {
-        executorService.execute(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                if (socketMap.get(cId) != null) {
-                    onError(cId, TAG + "createSocket called twice with the same id.");
-                    return;
-                }
-                try {
-                    // Get the network interface
-                    final String localAddress = options.hasKey("localAddress") ? options.getString("localAddress") : null;
-                    final String iface = options.hasKey("interface") ? options.getString("interface") : null;
-                    selectNetwork(iface, localAddress);
-                    TcpSocketClient client = new TcpSocketClient(RNSerialportModule.this, cId, null);
-                    socketMap.put(cId, client);
-                    client.connect(mReactContext, host, port, options, currentNetwork.getNetwork());
-                    onConnect(cId, client);
-                } catch (Exception e) {
-                    onError(cId, e.getMessage());
-                }
-            }
-        }));
-    }
-
-    public void writeSocketBytes(@NonNull final Integer cId, @NonNull final byte[] bytes) {
-        TcpSocketClient socketClient = getTcpClient(cId);
-        try {
-            socketClient.write(bytes);
-        } catch (IOException e) {
-            onError(cId, e.toString());
-        }
-    }
-
-    @SuppressLint("StaticFieldLeak")
-    @SuppressWarnings("unused")
-    @ReactMethod
-    public void write(@NonNull final Integer cId, @NonNull final String base64String, @Nullable final Callback callback) {
-        executorService.execute(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                TcpSocketClient socketClient = getTcpClient(cId);
-                try {
-                    socketClient.write(Base64.decode(base64String, Base64.NO_WRAP));
-                    if (callback != null) {
-                        callback.invoke();
-                    }
-                } catch (IOException e) {
-                    if (callback != null) {
-                        callback.invoke(e.toString());
-                    }
-                    onError(cId, e.toString());
-                }
-            }
-        }));
-    }
-
-    @SuppressLint("StaticFieldLeak")
-    @SuppressWarnings("unused")
-    @ReactMethod
-    public void end(final Integer cId) {
-        executorService.execute(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                TcpSocketClient socketClient = getTcpClient(cId);
-                socketClient.destroy();
-                socketMap.remove(cId);
-                deviceName2SocketId.values().removeIf(cId::equals);
-            }
-        }));
-    }
-
-    @SuppressWarnings("unused")
-    @ReactMethod
-    public void destroy(final Integer cId) {
-        end(cId);
-    }
-
-    @SuppressWarnings("unused")
-    @ReactMethod
-    public void close(final Integer cId) {
-        executorService.execute(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                TcpSocketServer socketServer = getTcpServer(cId);
-                socketServer.close();
-                socketMap.remove(cId);
-                deviceName2SocketId.values().removeIf(cId::equals);
-            }
-        }));
-    }
-
-    @SuppressLint("StaticFieldLeak")
-    @SuppressWarnings("unused")
-    @ReactMethod
-    public void listen(final Integer cId, final ReadableMap options) {
-        executorService.execute(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    TcpSocketServer server = new TcpSocketServer(socketMap, RNSerialportModule.this, cId, options);
-                    socketMap.put(cId, server);
-                    onListen(cId, server);
-                } catch (Exception uhe) {
-                    onError(cId, uhe.getMessage());
-                }
-            }
-        }));
-    }
-
-    @SuppressWarnings("unused")
-    @ReactMethod
-    public void setNoDelay(@NonNull final Integer cId, final boolean noDelay) {
-        final TcpSocketClient client = getTcpClient(cId);
-        try {
-            client.setNoDelay(noDelay);
-        } catch (IOException e) {
-            onError(cId, e.getMessage());
-        }
-    }
-
-    @SuppressWarnings("unused")
-    @ReactMethod
-    public void setKeepAlive(@NonNull final Integer cId, final boolean enable, final int initialDelay) {
-        final TcpSocketClient client = getTcpClient(cId);
-        try {
-            client.setKeepAlive(enable, initialDelay);
-        } catch (IOException e) {
-            onError(cId, e.getMessage());
-        }
-    }
-
-    private void requestNetwork(final int transportType) throws InterruptedException {
-        final NetworkRequest.Builder requestBuilder = new NetworkRequest.Builder();
-        requestBuilder.addTransportType(transportType);
-        final CountDownLatch awaitingNetwork = new CountDownLatch(1); // only needs to be counted down once to release waiting threads
-        final ConnectivityManager cm = (ConnectivityManager) mReactContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-        cm.requestNetwork(requestBuilder.build(), new ConnectivityManager.NetworkCallback() {
-            @Override
-            public void onAvailable(Network network) {
-                currentNetwork.setNetwork(network);
-                awaitingNetwork.countDown(); // Stop waiting
-            }
-
-            @Override
-            public void onUnavailable() {
-                awaitingNetwork.countDown(); // Stop waiting
-            }
-        });
-        // Timeout if there the network is unreachable
-        ScheduledThreadPoolExecutor exec = new ScheduledThreadPoolExecutor(1);
-        exec.schedule(new Runnable() {
-            public void run() {
-                awaitingNetwork.countDown(); // Stop waiting
-            }
-        }, 5, TimeUnit.SECONDS);
-        awaitingNetwork.await();
-    }
-
-    // REQUEST NETWORK
-
-    /**
-     * Returns a network given its interface name:
-     * "wifi" -> WIFI
-     * "cellular" -> Cellular
-     * etc...
-     */
-    private void selectNetwork(@Nullable final String iface, @Nullable final String ipAddress) throws InterruptedException, IOException {
-        currentNetwork.setNetwork(null);
-        if (iface == null) return;
-        if (ipAddress != null) {
-            final Network cachedNetwork = mNetworkMap.get(iface + ipAddress);
-            if (cachedNetwork != null) {
-                currentNetwork.setNetwork(cachedNetwork);
-                return;
-            }
-        }
-        switch (iface) {
-            case "wifi":
-                requestNetwork(NetworkCapabilities.TRANSPORT_WIFI);
-                break;
-            case "cellular":
-                requestNetwork(NetworkCapabilities.TRANSPORT_CELLULAR);
-                break;
-            case "ethernet":
-                requestNetwork(NetworkCapabilities.TRANSPORT_ETHERNET);
-                break;
-        }
-        if (currentNetwork.getNetwork() == null) {
-            throw new IOException("Interface " + iface + " unreachable");
-        } else if (ipAddress != null && !ipAddress.equals("0.0.0.0"))
-            mNetworkMap.put(iface + ipAddress, currentNetwork.getNetwork());
-    }
-
-    // TcpReceiverTask.OnDataReceivedListener
-
-    @Override
-    public void onConnect(Integer id, TcpSocketClient client) {
-        WritableMap eventParams = Arguments.createMap();
-        eventParams.putInt("id", id);
-        WritableMap connectionParams = Arguments.createMap();
-        final Socket socket = client.getSocket();
-        final InetSocketAddress remoteAddress = (InetSocketAddress) socket.getRemoteSocketAddress();
-
-        connectionParams.putString("localAddress", socket.getLocalAddress().getHostAddress());
-        connectionParams.putInt("localPort", socket.getLocalPort());
-        connectionParams.putString("remoteAddress", remoteAddress.getAddress().getHostAddress());
-        connectionParams.putInt("remotePort", socket.getPort());
-        connectionParams.putString("remoteFamily", remoteAddress.getAddress() instanceof Inet6Address ? "IPv6" : "IPv4");
-        eventParams.putMap("connection", connectionParams);
-        sendEvent("connect", eventParams);
-    }
-
-    @Override
-    public void onListen(Integer id, TcpSocketServer server) {
-        WritableMap eventParams = Arguments.createMap();
-        eventParams.putInt("id", id);
-        WritableMap connectionParams = Arguments.createMap();
-        final ServerSocket serverSocket = server.getServerSocket();
-        final InetAddress address = serverSocket.getInetAddress();
-
-        connectionParams.putString("localAddress", serverSocket.getInetAddress().getHostAddress());
-        connectionParams.putInt("localPort", serverSocket.getLocalPort());
-        connectionParams.putString("localFamily", address instanceof Inet6Address ? "IPv6" : "IPv4");
-        eventParams.putMap("connection", connectionParams);
-        sendEvent("listening", eventParams);
-    }
-
-    @Override
-    public void onData(Integer id, byte[] data) {
-        // Always use native Gateway for TCP data processing
-        Gateway.onSocketData(id, data, RNSerialportModule.this);
-    }
-
-    @Override
-    public void onClose(Integer id, String error) {
-        socketMap.remove(id);
-        deviceName2SocketId.values().removeIf(id::equals);
-
-        if (error != null) {
-            onError(id, error);
-        }
-        WritableMap eventParams = Arguments.createMap();
-        eventParams.putInt("id", id);
-        eventParams.putBoolean("hadError", error != null);
-
-        sendEvent("close", eventParams);
-    }
-
-    @Override
-    public void onError(Integer id, String error) {
-        WritableMap eventParams = Arguments.createMap();
-        eventParams.putInt("id", id);
-        eventParams.putString("error", error);
-
-        sendEvent("error", eventParams);
-    }
-
-    @Override
-    public void onConnection(Integer serverId, Integer clientId, Socket socket) {
-        WritableMap eventParams = Arguments.createMap();
-        eventParams.putInt("id", serverId);
-
-        WritableMap infoParams = Arguments.createMap();
-        infoParams.putInt("id", clientId);
-
-        WritableMap connectionParams = Arguments.createMap();
-        final InetSocketAddress remoteAddress = (InetSocketAddress) socket.getRemoteSocketAddress();
-
-        connectionParams.putString("localAddress", socket.getLocalAddress().getHostAddress());
-        connectionParams.putInt("localPort", socket.getLocalPort());
-        connectionParams.putString("remoteAddress", remoteAddress.getAddress().getHostAddress());
-        connectionParams.putInt("remotePort", socket.getPort());
-        connectionParams.putString("remoteFamily", remoteAddress.getAddress() instanceof Inet6Address ? "IPv6" : "IPv4");
-
-        infoParams.putMap("connection", connectionParams);
-        eventParams.putMap("info", infoParams);
-
-        sendEvent("connection", eventParams);
-    }
-
-    public TcpSocketClient getTcpClient(final int id) {
-        TcpSocket socket = socketMap.get(id);
-        if (socket == null) {
-            throw new IllegalArgumentException(TAG + "No socket with id " + id);
-        }
-        if (!(socket instanceof TcpSocketClient)) {
-            throw new IllegalArgumentException(TAG + "Socket with id " + id + " is not a client");
-        }
-        return (TcpSocketClient) socket;
-    }
-
-    private TcpSocketServer getTcpServer(final int id) {
-        TcpSocket socket = socketMap.get(id);
-        if (socket == null) {
-            throw new IllegalArgumentException(TAG + "No socket with id " + id);
-        }
-        if (!(socket instanceof TcpSocketServer)) {
-            throw new IllegalArgumentException(TAG + "Socket with id " + id + " is not a server");
-        }
-        return (TcpSocketServer) socket;
-    }
-
-    private static class CurrentNetwork {
-        @Nullable
-        Network network = null;
-
-        private CurrentNetwork() {
-        }
-
-        @Nullable
-        private Network getNetwork() {
-            return network;
-        }
-
-        private void setNetwork(@Nullable final Network network) {
-            this.network = network;
-        }
-    }
 
   ///////////////////////////////////////////////Native Serial Queue /////////////////////////////////////////////////////////
   ///////////////////////////////////////////////Native Serial Queue /////////////////////////////////////////////////////////
@@ -2107,14 +1740,6 @@ public class RNSerialportModule extends ReactContextBaseJavaModule implements Li
     }
     heartbeatTimer = null;
     heartbeatDevice = null;
-  }
-
-  ///////////////////////////////////////////////Gateway /////////////////////////////////////////////////////////
-  ///////////////////////////////////////////////Gateway /////////////////////////////////////////////////////////
-
-  @ReactMethod
-  public void appBus2DeviceNamePut(Integer appBus, String deviceName) {
-    appBus2DeviceName.put(appBus, deviceName);
   }
 
   ///////////////////////////////////////////////Native Data Processing /////////////////////////////////////////////////////////

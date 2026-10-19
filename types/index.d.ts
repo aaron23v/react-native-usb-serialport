@@ -375,31 +375,6 @@ interface RNSerialportStatic {
   disconnectAllDevices(): void;
 
   /**
-   * Set native gateway mode for device communication
-   *
-   * @param {boolean} isNativeGw Whether to enable native gateway mode
-   * @memberof RNSerialportStatic
-   */
-  setIsNativeGateway(isNativeGw: boolean): void;
-
-  /**
-   * Enable/disable JS event emission for serial port data in native gateway mode
-   *
-   * @param {boolean} isJsEvent Whether to emit JS events
-   * @memberof RNSerialportStatic
-   */
-  setIsNativeGatewayJsEventEmitOnSerialportData(isJsEvent: boolean): void;
-
-  /**
-   * Map application bus to device name
-   *
-   * @param {number} appBus Application bus identifier
-   * @param {string} deviceName Device name to map
-   * @memberof RNSerialportStatic
-   */
-  appBus2DeviceNamePut(appBus: number, deviceName: string): void;
-
-  /**
    * Start manual log collection for specified device
    * Uses native device state to determine log collection parameters
    *
