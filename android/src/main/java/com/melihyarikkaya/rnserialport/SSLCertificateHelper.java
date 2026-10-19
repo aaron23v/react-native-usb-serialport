@@ -1,6 +1,5 @@
 package com.melihyarikkaya.rnserialport;
 
-import android.annotation.SuppressLint;
 import android.content.Context;
 
 import java.io.IOException;
@@ -11,29 +10,15 @@ import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509TrustManager;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.RawRes;
 
 final class SSLCertificateHelper {
-    /**
-     * Creates an SSLSocketFactory instance for use with all CAs provided.
-     *
-     * @return An SSLSocketFactory which trusts all CAs when provided to network clients
-     */
-    static SSLSocketFactory createBlindSocketFactory() throws GeneralSecurityException {
-        SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, new TrustManager[]{new BlindTrustManager()}, null);
-        return ctx.getSocketFactory();
-    }
-
     /**
      * Creates an SSLSocketFactory instance for use with the CA provided in the resource file.
      *
@@ -75,20 +60,6 @@ final class SSLCertificateHelper {
             return Integer.parseInt(name);
         } catch (NumberFormatException ex) {
             return context.getResources().getIdentifier(name, "raw", context.getPackageName());
-        }
-    }
-
-    private static class BlindTrustManager implements X509TrustManager {
-        public X509Certificate[] getAcceptedIssuers() {
-            return null;
-        }
-
-        @SuppressLint("TrustAllX509TrustManager")
-        public void checkClientTrusted(X509Certificate[] chain, String authType) {
-        }
-
-        @SuppressLint("TrustAllX509TrustManager")
-        public void checkServerTrusted(X509Certificate[] chain, String authType) {
         }
     }
 }

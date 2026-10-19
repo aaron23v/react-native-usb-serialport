@@ -48,13 +48,8 @@ class TcpSocketClient extends TcpSocket {
         if (socket != null) throw new IOException("Already connected");
         final boolean isTls = options.hasKey("tls") && options.getBoolean("tls");
         if (isTls) {
-            SocketFactory sf;
-            if (options.hasKey("tlsCheckValidity") && !options.getBoolean("tlsCheckValidity")) {
-                sf = SSLCertificateHelper.createBlindSocketFactory();
-            } else {
-                final String customTlsCert = options.hasKey("tlsCert") ? options.getString("tlsCert") : null;
-                sf = customTlsCert != null ? SSLCertificateHelper.createCustomTrustedSocketFactory(context, customTlsCert) : SSLSocketFactory.getDefault();
-            }
+            final String customTlsCert = options.hasKey("tlsCert") ? options.getString("tlsCert") : null;
+            final SocketFactory sf = customTlsCert != null ? SSLCertificateHelper.createCustomTrustedSocketFactory(context, customTlsCert) : SSLSocketFactory.getDefault();
             final SSLSocket sslSocket = (SSLSocket) sf.createSocket();
             sslSocket.setUseClientMode(true);
             socket = sslSocket;

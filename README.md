@@ -16,6 +16,9 @@ The usb serial port part include `.aar` library from [felHR85/UsbSerial](https:/
 
 The socket part copy and modify code from [react-native-tcp-socket@5.2.1](https://github.com/Rapsssito/react-native-tcp-socket/tree/v5.2.1)
 
+### Local modifications to the socket code (keep when re-syncing upstream)
+- Removed `BlindTrustManager`, `SSLCertificateHelper.createBlindSocketFactory()` and the `tlsCheckValidity` connection option. TLS connections always validate the server certificate, against either the system trust store or the CA passed in `tlsCert`. Don't bring the trust-all path back when merging newer react-native-tcp-socket code.
+
 ## Changelog
 ### [3.0.0] - 2024-08-23
 Support android targeting S+

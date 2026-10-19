@@ -30,7 +30,6 @@ const STATE = {
  * interface?: 'wifi' | 'cellular' | 'ethernet',
  * reuseAddress?: boolean,
  * tls?: boolean,
- * tlsCheckValidity?: boolean,
  * tlsCert?: any,
  * }} ConnectionOptions
  *
